@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Patrimônio – Congregação Cristã no Brasil</title>
+<meta name="description" content="Inventário de patrimônio da Congregação Cristã no Brasil: leia o código de barras, consulte o item e confira o inventário.">
+<meta name="theme-color" content="#0f2a4a">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <img src="icon.svg" alt="" class="logo">
+  <div class="titles">
+    <h1>Congregação Cristã no Brasil</h1>
+    <p>Controle de Patrimônio</p>
+  </div>
+  <button id="btnUser" class="chip" title="Trocar usuário">👤 <span id="userName">—</span></button>
+</header>
+
+<main>
+  <!-- LEITOR -->
+  <section id="tab-scan" class="tab active">
+    <div class="scanner">
+      <video id="video" playsinline muted></video>
+      <div class="frame"><span class="laser"></span></div>
+      <div id="scanHint" class="hint">Toque em “Ler código” para abrir a câmera</div>
+    </div>
+    <div class="row">
+      <button id="btnScan" class="btn primary">📷 Ler código</button>
+      <button id="btnTorch" class="btn ghost hidden">🔦</button>
+    </div>
+    <form id="manualForm" class="row manual">
+      <input id="manualCode" type="text" inputmode="text" placeholder="Ou digite o código de barras" autocomplete="off">
+      <button class="btn">Buscar</button>
+    </form>
+    <div id="result"></div>
+  </section>
+
+  <!-- INVENTÁRIO -->
+  <section id="tab-list" class="tab">
+    <div class="stats">
+      <div class="stat"><b id="stTotal">0</b><span>Cadastrados</span></div>
+      <div class="stat ok"><b id="stOk">0</b><span>Conferidos</span></div>
+      <div class="stat warn"><b id="stPend">0</b><span>Pendentes</span></div>
+    </div>
+    <div class="bar"><div id="progress"></div></div>
+    <div class="row">
+      <input id="search" type="search" placeholder="Buscar por nome, código ou local">
+    </div>
+    <div class="filters">
+      <button class="chip sel" data-f="all">Todos</button>
+      <button class="chip" data-f="pend">Pendentes</button>
+      <button class="chip" data-f="ok">Conferidos</button>
+    </div>
+    <ul id="list" class="list"></ul>
+  </section>
+
+  <!-- IMPORTAR -->
+  <section id="tab-data" class="tab">
+    <div class="card">
+      <h2>Importar base (CSV)</h2>
+      <p class="muted">Arquivo gerado pelo sistema desktop. Colunas reconhecidas: <code>codigo</code>, <code>descricao</code> (ou nome), <code>categoria</code>, <code>local</code>, <code>observacao</code>. Outras colunas também são exibidas. Separador <code>;</code> ou <code>,</code>.</p>
+      <label class="btn primary file">📂 Selecionar CSV
+        <input id="csvFile" type="file" accept=".csv,text/csv,text/plain" hidden>
+      </label>
+      <label class="check"><input type="checkbox" id="keepState" checked> Manter conferências e fotos já feitas dos códigos existentes</label>
+      <p id="importMsg" class="muted"></p>
+    </div>
+    <div class="card">
+      <h2>Exportar inventário</h2>
+      <p class="muted">CSV com a situação de cada item, data/hora e usuário da conferência.</p>
+      <button id="btnExport" class="btn">⬇️ Exportar CSV</button>
+    </div>
+    <div class="card danger">
+      <h2>Limpar dados</h2>
+      <button id="btnReset" class="btn danger">Apagar tudo</button>
+    </div>
+  </section>
+</main>
+
+<nav class="tabs">
+  <button data-tab="scan" class="active"><i>📷</i>Leitor</button>
+  <button data-tab="list"><i>📋</i>Inventário</button>
+  <button data-tab="data"><i>⚙️</i>Dados</button>
+</nav>
+
+<input id="photoInput" type="file" accept="image/*" capture="environment" hidden>
+<div id="toast" class="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
