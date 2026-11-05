@@ -1,4 +1,9 @@
 'use strict';
+
+/* ====== Configuração Padrão do Supabase ====== */
+const DEFAULT_SUPABASE_URL = '';
+const DEFAULT_SUPABASE_ANON_KEY = '';
+
 /* ====== Banco local (IndexedDB) ====== */
 const DB = {
   db: null,
@@ -23,9 +28,130 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const norm = s => String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), 2500); }
 
+/* ====== Integração com Supabase (REST API) ====== */
+const Cloud = {
+  get url() { return (localStorage.getItem('sb_url') || DEFAULT_SUPABASE_URL || '').trim().replace(/\/+$/, ''); },
+  get key() { return (localStorage.getItem('sb_key') || DEFAULT_SUPABASE_ANON_KEY || '').trim(); },
+  isReady() { return Boolean(this.url && this.key); },
+  headers(extra = {}) {
+    return {
+      'apikey': this.key,
+      'Authorization': `Bearer ${this.key}`,
+      'Content-Type': 'application/json',
+      ...extra,
+    };
+  },
+  toRow(it) {
+    return {
+      code: it.code,
+      desc_item: it.desc || '(sem descrição)',
+      cat: it.cat || '',
+      loc: it.loc || '',
+      obs: it.obs || '',
+      extra: it.extra || {},
+      photo: it.photo || null,
+      checked: Boolean(it.checked),
+      at: it.at || null,
+      by_user: it.by || null,
+      updated_at: new Date().toISOString(),
+    };
+  },
+  fromRow(r) {
+    return {
+      code: String(r.code),
+      desc: r.desc_item || '(sem descrição)',
+      cat: r.cat || '',
+      loc: r.loc || '',
+      obs: r.obs || '',
+      extra: r.extra || {},
+      photo: r.photo || null,
+      checked: Boolean(r.checked),
+      at: r.at || null,
+      by: r.by_user || null,
+    };
+  },
+  updateBadge(online, msg) {
+    const b = $('#cloudBadge');
+    if (!b) return;
+    if (online) {
+      b.textContent = '☁️ Supabase';
+      b.classList.add('online');
+    } else {
+      b.textContent = this.isReady() ? '⚠️ Offline' : '📴 Local';
+      b.classList.remove('online');
+    }
+    if (msg && $('#sbStatus')) $('#sbStatus').textContent = msg;
+  },
+  async upsert(itemList) {
+    if (!this.isReady() || !itemList.length) return false;
+    try {
+      const payload = itemList.map(i => this.toRow(i));
+      const res = await fetch(`${this.url}/rest/v1/patrimonio_items?on_conflict=code`, {
+        method: 'POST',
+        headers: this.headers({ 'Prefer': 'resolution=merge-duplicates,return=minimal' }),
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      this.updateBadge(true, `✔ Sincronizado com Supabase em ${new Date().toLocaleTimeString('pt-BR')}`);
+      return true;
+    } catch (e) {
+      console.warn('Erro ao salvar no Supabase:', e);
+      this.updateBadge(false, `⚠️ Erro ao sincronizar com Supabase: ${e.message || 'verifique a tabela/chave'}`);
+      return false;
+    }
+  },
+  async syncAll(pushLocalFirst = false) {
+    if (!this.isReady()) {
+      this.updateBadge(false, 'Configure a URL e a Anon Key do seu projeto Supabase acima.');
+      return false;
+    }
+    try {
+      if (pushLocalFirst) {
+        const localItems = await DB.all();
+        if (localItems.length) await this.upsert(localItems);
+      }
+      const res = await fetch(`${this.url}/rest/v1/patrimonio_items?select=*`, {
+        headers: this.headers(),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const rows = await res.json();
+      const remoteCodes = new Set();
+      for (const r of rows) {
+        const it = this.fromRow(r);
+        remoteCodes.add(it.code);
+        await DB.put(it);
+      }
+      // Envia itens locais que ainda não estavam na nuvem
+      const allLocal = await DB.all();
+      const missingOnCloud = allLocal.filter(i => !remoteCodes.has(i.code));
+      if (missingOnCloud.length) await this.upsert(missingOnCloud);
+
+      this.updateBadge(true, `✔ Conectado ao Supabase (${allLocal.length} itens na base).`);
+      await refresh();
+      return true;
+    } catch (e) {
+      console.warn('Erro ao buscar do Supabase:', e);
+      this.updateBadge(false, `⚠️ Falha na conexão com Supabase. Verifique se a tabela patrimonio_items foi criada.`);
+      return false;
+    }
+  },
+  async clearRemote() {
+    if (!this.isReady()) return;
+    try {
+      await fetch(`${this.url}/rest/v1/patrimonio_items?code=not.is.null`, {
+        method: 'DELETE',
+        headers: this.headers(),
+      });
+    } catch (e) {
+      console.warn('Erro ao limpar Supabase:', e);
+    }
+  }
+};
+
 let items = [];
 let filter = 'all';
 let currentCode = null;
+let newItemPhotoData = null;
 
 /* ====== Usuário ====== */
 function askUser(force) {
@@ -45,6 +171,37 @@ document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   if (b.dataset.tab !== 'scan') stopScan();
   if (b.dataset.tab === 'list') renderList();
 });
+
+/* ====== Configuração Supabase na Aba Dados ====== */
+function initSupabaseConfig() {
+  const params = new URLSearchParams(location.search);
+  if (params.get('sb_url')) localStorage.setItem('sb_url', params.get('sb_url').trim());
+  if (params.get('sb_key')) localStorage.setItem('sb_key', params.get('sb_key').trim());
+
+  if ($('#sbUrl')) $('#sbUrl').value = Cloud.url;
+  if ($('#sbKey')) $('#sbKey').value = Cloud.key;
+
+  $('#btnSaveSb')?.addEventListener('click', async () => {
+    const u = $('#sbUrl').value.trim();
+    const k = $('#sbKey').value.trim();
+    localStorage.setItem('sb_url', u);
+    localStorage.setItem('sb_key', k);
+    if (!u || !k) {
+      Cloud.updateBadge(false, 'Credenciais removidas. Funcionando apenas no banco local.');
+      return toast('Modo local ativado');
+    }
+    toast('Conectando ao Supabase...');
+    const ok = await Cloud.syncAll(true);
+    toast(ok ? 'Supabase conectado e sincronizado ✔' : 'Erro ao conectar ao Supabase');
+  });
+
+  $('#btnSyncSb')?.addEventListener('click', async () => {
+    if (!Cloud.isReady()) return toast('Informe a URL e a Anon Key primeiro');
+    toast('Sincronizando com Supabase...');
+    const ok = await Cloud.syncAll(true);
+    toast(ok ? 'Base sincronizada ✔' : 'Falha ao sincronizar');
+  });
+}
 
 /* ====== CSV ====== */
 function decode(buf) {
@@ -96,18 +253,24 @@ async function importCSV(file) {
   const old = new Map((await DB.all()).map(i => [i.code, i]));
   await DB.clear();
   let n = 0;
+  const imported = [];
   for (const r of rows.slice(1)) {
     const code = (r[map.code] || '').trim();
     if (!code) continue;
     const extra = {};
     heads.forEach((h, i) => { if (!used.has(i) && h && (r[i] || '').trim()) extra[h] = r[i].trim(); });
     const prev = keep ? old.get(code) : null;
-    await DB.put({
+    const item = {
       code, desc: (r[map.desc] || '').trim() || '(sem descrição)',
       cat: (r[map.cat] || '').trim(), loc: (r[map.loc] || '').trim(), obs: (r[map.obs] || '').trim(), extra,
       photo: prev?.photo || null, checked: prev?.checked || false, at: prev?.at || null, by: prev?.by || null,
-    });
+    };
+    await DB.put(item);
+    imported.push(item);
     n++;
+  }
+  if (Cloud.isReady() && imported.length) {
+    await Cloud.upsert(imported);
   }
   $('#importMsg').textContent = `✔ ${n} itens importados em ${new Date().toLocaleString('pt-BR')}.`;
   localStorage.setItem('lastImport', $('#importMsg').textContent);
@@ -128,22 +291,45 @@ $('#btnExport').onclick = () => {
   a.click();
 };
 $('#btnReset').onclick = async () => {
-  if (confirm('Apagar TODOS os itens, fotos e conferências deste aparelho?')) { await DB.clear(); await refresh(); $('#result').innerHTML = ''; toast('Dados apagados'); }
+  if (confirm('Apagar TODOS os itens, fotos e conferências da base?')) {
+    await DB.clear();
+    await Cloud.clearRemote();
+    await refresh();
+    $('#result').innerHTML = '';
+    toast('Dados apagados');
+  }
 };
 
-/* ====== Busca / exibição ====== */
+/* ====== Busca / Exibição / Pergunta de Novo Item ====== */
 function find(code) {
   code = code.trim();
   return items.find(i => i.code === code)
     || items.find(i => i.code.toLowerCase() === code.toLowerCase())
     || items.find(i => i.code.replace(/^0+/, '') === code.replace(/^0+/, ''));
 }
+
 function showResult(code) {
+  code = String(code || '').trim();
+  if (!code) return;
   const it = find(code);
   const box = $('#result');
   if (!it) {
     currentCode = null;
-    box.innerHTML = `<div class="notfound"><b>❌ Código não cadastrado</b><p class="code">${esc(code)}</p><p class="muted">Este código não consta na base importada.</p></div>`;
+    box.innerHTML = `<div class="notfound">
+      <b>❌ Código não cadastrado</b>
+      <p class="code">${esc(code)}</p>
+      <p class="ask-title">Deseja criar este item do patrimônio no momento?</p>
+      <div class="row">
+        <button type="button" id="btnAskNo" class="btn">Não</button>
+        <button type="button" id="btnAskYes" class="btn ok primary">✔ Sim, criar item</button>
+      </div>
+    </div>`;
+    $('#btnAskNo').onclick = () => {
+      box.innerHTML = '';
+      lastCode = '';
+      toast('Aguardando próxima leitura de código...');
+    };
+    $('#btnAskYes').onclick = () => openCreateModal(code);
     navigator.vibrate?.([200, 100, 200]);
     return;
   }
@@ -162,22 +348,119 @@ function showResult(code) {
   $('#btnCheck').onclick = () => toggleCheck(it.code);
   navigator.vibrate?.(80);
 }
+
+/* ====== Tela / Modal de Cadastro de Novo Item ====== */
+function openCreateModal(code) {
+  stopScan();
+  newItemPhotoData = null;
+  $('#newCode').value = code;
+  $('#newDesc').value = '';
+  $('#newCat').value = '';
+  $('#newLoc').value = '';
+  $('#newObs').value = '';
+  $('#newChecked').checked = true;
+  $('#newPhotoPreview').src = '';
+  $('#newPhotoPreview').classList.add('hidden');
+  $('#newPhotoPlaceholder').classList.remove('hidden');
+  $('#btnRemoveNewPhoto').classList.add('hidden');
+
+  // Preenche sugestões de Categorias e Locais já existentes
+  const cats = [...new Set(items.map(i => i.cat).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  const locs = [...new Set(items.map(i => i.loc).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  $('#catList').innerHTML = cats.map(c => `<option value="${esc(c)}">`).join('');
+  $('#locList').innerHTML = locs.map(l => `<option value="${esc(l)}">`).join('');
+
+  $('#createModal').classList.remove('hidden');
+  setTimeout(() => $('#newDesc').focus(), 100);
+}
+
+function closeCreateModal(clearPrompt = false) {
+  $('#createModal').classList.add('hidden');
+  newItemPhotoData = null;
+  if (clearPrompt) {
+    $('#result').innerHTML = '';
+    lastCode = '';
+  }
+}
+
+$('#btnCloseCreate').onclick = () => closeCreateModal(true);
+$('#btnCancelCreate').onclick = () => closeCreateModal(true);
+$('#newPhotoBox').onclick = () => $('#newPhotoInput').click();
+
+$('#newPhotoInput').onchange = async e => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  newItemPhotoData = await shrink(f, 900);
+  $('#newPhotoPreview').src = newItemPhotoData;
+  $('#newPhotoPreview').classList.remove('hidden');
+  $('#newPhotoPlaceholder').classList.add('hidden');
+  $('#btnRemoveNewPhoto').classList.remove('hidden');
+};
+
+$('#btnRemoveNewPhoto').onclick = () => {
+  newItemPhotoData = null;
+  $('#newPhotoPreview').src = '';
+  $('#newPhotoPreview').classList.add('hidden');
+  $('#newPhotoPlaceholder').classList.remove('hidden');
+  $('#btnRemoveNewPhoto').classList.add('hidden');
+};
+
+$('#createForm').onsubmit = async e => {
+  e.preventDefault();
+  const code = $('#newCode').value.trim();
+  const desc = $('#newDesc').value.trim();
+  const cat = $('#newCat').value.trim();
+  const loc = $('#newLoc').value.trim();
+  const obs = $('#newObs').value.trim();
+  const markChecked = $('#newChecked').checked;
+
+  if (!code || !desc) return toast('Preencha a descrição do item');
+
+  const item = {
+    code,
+    desc,
+    cat,
+    loc,
+    obs,
+    extra: {},
+    photo: newItemPhotoData || null,
+    checked: markChecked,
+    at: markChecked ? new Date().toISOString() : null,
+    by: markChecked ? askUser(false) : null,
+  };
+
+  await DB.put(item);
+  await Cloud.upsert([item]);
+  await refresh();
+  closeCreateModal(false);
+  showResult(code);
+  toast('Item cadastrado e salvo ✔');
+};
+
 async function toggleCheck(code) {
   const it = await DB.get(code);
   if (it.checked) { it.checked = false; it.at = null; it.by = null; }
   else { it.checked = true; it.at = new Date().toISOString(); it.by = askUser(false); }
-  await DB.put(it); await refresh(); showResult(code);
+  await DB.put(it);
+  await Cloud.upsert([it]);
+  await refresh();
+  showResult(code);
   toast(it.checked ? 'Item conferido ✔' : 'Conferência desfeita');
 }
 
-/* ====== Foto ====== */
+/* ====== Foto de item existente ====== */
 $('#photoInput').onchange = async e => {
   const f = e.target.files[0]; e.target.value = '';
   if (!f || !currentCode) return;
   const url = await shrink(f, 900);
   const it = await DB.get(currentCode);
-  it.photo = url; await DB.put(it); await refresh(); showResult(currentCode);
-  toast('Foto salva');
+  it.photo = url;
+  await DB.put(it);
+  await Cloud.upsert([it]);
+  await refresh();
+  showResult(currentCode);
+  toast('Foto salva ✔');
 };
 function shrink(file, max) {
   return new Promise(res => {
@@ -201,7 +484,7 @@ function renderList() {
     ${i.photo ? `<img class="thumb" src="${i.photo}" alt="">` : '<div class="thumb">📦</div>'}
     <div class="info"><b>${esc(i.desc)}</b><small>${esc(i.code)}${i.loc ? ' · ' + esc(i.loc) : ''}</small></div>
     <span class="badge ${i.checked ? 'ok' : 'warn'}">${i.checked ? '✔' : '…'}</span></li>`).join('')
-    : '<li class="empty">Nenhum item encontrado. Importe o CSV na aba Dados.</li>';
+    : '<li class="empty">Nenhum item encontrado. Leia um código para cadastrar ou importe o CSV na aba Dados.</li>';
 }
 $('#list').onclick = e => {
   const li = e.target.closest('li[data-c]'); if (!li) return;
@@ -283,7 +566,15 @@ $('#btnUser').onclick = () => askUser(true);
 
 /* ====== Início ====== */
 (async () => {
-  await DB.open(); await refresh(); askUser(false);
+  await DB.open();
+  initSupabaseConfig();
+  await refresh();
+  askUser(false);
+  if (Cloud.isReady()) {
+    Cloud.syncAll(false);
+  } else {
+    Cloud.updateBadge(false, 'Configure a URL e a Anon Key do seu projeto Supabase acima.');
+  }
   $('#importMsg').textContent = localStorage.getItem('lastImport') || '';
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
 })();

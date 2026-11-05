@@ -16,7 +16,7 @@
   <img src="icon.svg" alt="" class="logo">
   <div class="titles">
     <h1>Congregação Cristã no Brasil</h1>
-    <p>Controle de Patrimônio</p>
+    <p>Controle de Patrimônio <span id="cloudBadge" class="cloud-badge" title="Status do banco Supabase">📴 Local</span></p>
   </div>
   <button id="btnUser" class="chip" title="Trocar usuário">👤 <span id="userName">—</span></button>
 </header>
@@ -59,8 +59,26 @@
     <ul id="list" class="list"></ul>
   </section>
 
-  <!-- IMPORTAR -->
+  <!-- IMPORTAR / SUPABASE -->
   <section id="tab-data" class="tab">
+    <div class="card">
+      <h2>☁️ Banco de Dados (Supabase)</h2>
+      <p class="muted">Sincroniza automaticamente os itens cadastrados, fotos e conferências na nuvem (tabela <code>patrimonio_items</code>).</p>
+      <div class="form-stack">
+        <label class="field-label">Project URL do Supabase
+          <input id="sbUrl" type="text" placeholder="https://seu-projeto.supabase.co" autocomplete="off">
+        </label>
+        <label class="field-label">Anon Public Key
+          <input id="sbKey" type="text" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..." autocomplete="off">
+        </label>
+        <div class="row">
+          <button id="btnSaveSb" class="btn primary" type="button">💾 Conectar e Sincronizar</button>
+          <button id="btnSyncSb" class="btn" type="button" title="Sincronizar agora">🔄</button>
+        </div>
+        <p id="sbStatus" class="muted"></p>
+      </div>
+    </div>
+
     <div class="card">
       <h2>Importar base (CSV)</h2>
       <p class="muted">Arquivo gerado pelo sistema desktop. Colunas reconhecidas: <code>codigo</code>, <code>descricao</code> (ou nome), <code>categoria</code>, <code>local</code>, <code>observacao</code>. Outras colunas também são exibidas. Separador <code>;</code> ou <code>,</code>.</p>
@@ -82,6 +100,57 @@
   </section>
 </main>
 
+<!-- MODAL / TELA DE CADASTRO DE NOVO ITEM -->
+<div id="createModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="createTitle">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2 id="createTitle">Cadastrar Novo Item</h2>
+      <button type="button" id="btnCloseCreate" class="chip" aria-label="Fechar">✖</button>
+    </div>
+    <form id="createForm" class="form-stack">
+      <label class="field-label">Código de barras
+        <input id="newCode" type="text" readonly class="readonly-input">
+      </label>
+
+      <div class="field-label">Foto do item <span class="muted">(opcional)</span>
+        <div id="newPhotoBox" class="new-photo-box">
+          <span id="newPhotoPlaceholder">📷 Toque para tirar ou escolher uma foto (opcional)</span>
+          <img id="newPhotoPreview" class="hidden" alt="Pré-visualização da foto">
+        </div>
+        <button type="button" id="btnRemoveNewPhoto" class="btn ghost small hidden">🗑️ Remover foto</button>
+      </div>
+
+      <label class="field-label">Descrição / Nome do bem *
+        <input id="newDesc" type="text" required placeholder="Ex.: Cadeira estofada azul" autocomplete="off">
+      </label>
+
+      <label class="field-label">Categoria *
+        <input id="newCat" type="text" list="catList" required placeholder="Ex.: Móveis, Som, Informática" autocomplete="off">
+        <datalist id="catList"></datalist>
+      </label>
+
+      <label class="field-label">Local / Ambiente *
+        <input id="newLoc" type="text" list="locList" required placeholder="Ex.: Salão principal, Secretaria" autocomplete="off">
+        <datalist id="locList"></datalist>
+      </label>
+
+      <label class="field-label">Observação <span class="muted">(opcional)</span>
+        <textarea id="newObs" rows="2" placeholder="Detalhes adicionais, marca, estado de conservação..."></textarea>
+      </label>
+
+      <label class="check">
+        <input type="checkbox" id="newChecked" checked>
+        Já marcar este item como conferido no inventário
+      </label>
+
+      <div class="row">
+        <button type="button" id="btnCancelCreate" class="btn">Cancelar</button>
+        <button type="submit" id="btnSubmitCreate" class="btn ok primary">💾 Salvar Item</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <nav class="tabs">
   <button data-tab="scan" class="active"><i>📷</i>Leitor</button>
   <button data-tab="list"><i>📋</i>Inventário</button>
@@ -89,6 +158,7 @@
 </nav>
 
 <input id="photoInput" type="file" accept="image/*" capture="environment" hidden>
+<input id="newPhotoInput" type="file" accept="image/*" capture="environment" hidden>
 <div id="toast" class="toast"></div>
 
 <script src="app.js"></script>
