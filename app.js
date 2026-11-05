@@ -4,6 +4,11 @@
 const DEFAULT_SUPABASE_URL = 'https://vjdcsautoooubtjdhswk.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_fmDYGqwIa1IY_B-iNZ4XAQ_QUP1BNmb';
 const META_ROW_CODE = '__INV_META__';
+const HIST_PREFIX = '__INV_HIST__';
+
+function isSystemRow(code) {
+  return code === META_ROW_CODE || String(code).startsWith(HIST_PREFIX);
+}
 
 /* ====== Banco local (IndexedDB) ====== */
 const DB = {
@@ -38,17 +43,19 @@ function toast(msg) {
 }
 
 let items = [];
+let histories = []; // Lista de sessões de inventário (abertas e encerradas)
 let reconcileFilter = 'pend';
 let currentCode = null;
 let newItemPhotoData = null;
-let editingMasterMode = false;
 let wasScanningBeforePopup = false;
 let targetSearchCode = null;
+let sessionModalMode = 'new'; // 'new' | 'join'
+let pendingDeleteSessionCode = null;
 
-/* ====== Sessão de Inventário & Usuário ====== */
+/* ====== Sessão de Inventário, Senha & Histórico ====== */
 function getDefaultSessionCode() {
   const d = new Date();
-  const ym = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const ym = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
   return `INV-${ym}-01`;
 }
 
@@ -79,13 +86,93 @@ function setUser(name) {
   return clean;
 }
 
+function getActiveHistoryObj() {
+  const code = getSessionCode();
+  return histories.find(h => h.sessionCode === code) || null;
+}
+
+function isCurrentSessionClosed() {
+  const h = getActiveHistoryObj();
+  return h?.status === 'ENCERRADO';
+}
+
 function updateSessionUI() {
   const s = getSessionCode();
   const u = getUser() || 'Identificar';
+  const closed = isCurrentSessionClosed();
+
   if ($('#sessionCodeLabel')) $('#sessionCodeLabel').textContent = s;
   if ($('#scanSessionTitle')) $('#scanSessionTitle').textContent = s;
   if ($('#recSessionCode')) $('#recSessionCode').textContent = s;
   if ($('#userName')) $('#userName').textContent = u;
+
+  const badge = $('#sessionStatusBadge');
+  if (badge) {
+    badge.textContent = closed ? 'ENCERRADO' : 'ABERTO';
+    badge.className = `badge ${closed ? 'bad' : 'ok'}`;
+  }
+  if ($('#scanSessionStatusText')) {
+    $('#scanSessionStatusText').textContent = closed ? 'Encerrado no histórico' : 'Em contagem';
+  }
+
+  $('#closedSessionBanner')?.classList.toggle('hidden', !closed);
+  $('#btnOpenCloseInvModal')?.classList.toggle('hidden', closed);
+  $('#btnReopenActiveInv')?.classList.toggle('hidden', !closed);
+}
+
+function buildSnapshotFromItems(itemList) {
+  const snap = {};
+  for (const it of itemList) {
+    if (it.checked) {
+      snap[it.code] = {
+        checked: true,
+        at: it.at || new Date().toISOString(),
+        by: it.by || getUser() || 'Contador',
+        method: it.extra?._count_method || 'Leitura Código',
+      };
+    }
+  }
+  return snap;
+}
+
+async function saveSessionToHistory({ sessionCode, status, password, startedBy, startedAt, closedBy, closedAt }) {
+  const rowCode = HIST_PREFIX + sessionCode;
+  const existingRow = await DB.get(rowCode);
+  const prevExtra = existingRow?.extra || {};
+  const allMaster = (await DB.all()).filter(i => !isSystemRow(i.code));
+  const snapshot = buildSnapshotFromItems(allMaster);
+  const countedCount = Object.keys(snapshot).length;
+
+  const extraData = {
+    sessionCode,
+    status: status || prevExtra.status || 'ABERTO',
+    password: password !== undefined ? password : (prevExtra.password || ''),
+    startedBy: startedBy || prevExtra.startedBy || getUser() || 'Contador',
+    startedAt: startedAt || prevExtra.startedAt || new Date().toISOString(),
+    closedBy: closedBy !== undefined ? closedBy : (prevExtra.closedBy || null),
+    closedAt: closedAt !== undefined ? closedAt : (prevExtra.closedAt || null),
+    updatedAt: new Date().toISOString(),
+    totalMaster: allMaster.length,
+    totalCounted: countedCount,
+    snapshot,
+  };
+
+  const histRow = {
+    code: rowCode,
+    desc: `HIST_INVENTARIO_${sessionCode}`,
+    cat: extraData.status,
+    loc: '',
+    obs: '',
+    extra: extraData,
+    photo: null,
+    checked: extraData.status === 'ENCERRADO',
+    at: extraData.updatedAt,
+    by: extraData.startedBy,
+  };
+
+  await DB.put(histRow);
+  await Cloud.upsert([histRow]);
+  return extraData;
 }
 
 /* ====== Integração com Supabase (REST API) ====== */
@@ -151,10 +238,10 @@ const Cloud = {
       });
       if (!res.ok) return null;
       const rows = await res.json();
-      if (rows && rows[0] && rows[0].code !== META_ROW_CODE) {
+      if (rows && rows[0]) {
         const it = this.fromRow(rows[0]);
         await DB.put(it);
-        return it;
+        return isSystemRow(it.code) ? null : it;
       }
       return null;
     } catch {
@@ -188,24 +275,24 @@ const Cloud = {
         headers: this.headers(),
       });
     } catch (e) {
-      console.warn('Erro ao remover item no Supabase:', e);
+      console.warn('Erro ao remover no Supabase:', e);
     }
   },
-  async saveActiveSessionMeta(sessionCode, startedBy) {
-    if (!this.isReady()) return;
+  async saveActiveSessionMeta(sessionCode, startedBy, password, status = 'ABERTO') {
     const metaRow = {
       code: META_ROW_CODE,
       desc: 'META_SESSAO_INVENTARIO',
-      cat: '',
+      cat: status,
       loc: '',
       obs: '',
-      extra: { sessionCode, startedBy, updatedAt: new Date().toISOString() },
+      extra: { sessionCode, startedBy, password, status, updatedAt: new Date().toISOString() },
       photo: null,
       checked: false,
       at: new Date().toISOString(),
       by: startedBy || null,
     };
-    await this.upsert([metaRow]);
+    await DB.put(metaRow);
+    if (this.isReady()) await this.upsert([metaRow]);
   },
   async syncAll(pushLocalFirst = false) {
     if (!this.isReady()) {
@@ -214,7 +301,7 @@ const Cloud = {
     }
     try {
       if (pushLocalFirst) {
-        const localItems = (await DB.all()).filter(i => i.code !== META_ROW_CODE);
+        const localItems = await DB.all();
         if (localItems.length) await this.upsert(localItems);
       }
       const res = await fetch(`${this.url}/rest/v1/patrimonio_items?select=*`, {
@@ -224,21 +311,19 @@ const Cloud = {
       const rows = await res.json();
       const remoteCodes = new Set();
       for (const r of rows) {
-        if (r.code === META_ROW_CODE) {
-          if (r.extra?.sessionCode && !localStorage.getItem('inv_session_manual')) {
-            setSessionCode(r.extra.sessionCode);
-          }
-          continue;
-        }
         const it = this.fromRow(r);
         remoteCodes.add(it.code);
         await DB.put(it);
+        if (r.code === META_ROW_CODE && r.extra?.sessionCode && !localStorage.getItem('inv_session_manual')) {
+          setSessionCode(r.extra.sessionCode);
+        }
       }
-      const allLocal = (await DB.all()).filter(i => i.code !== META_ROW_CODE);
+      const allLocal = await DB.all();
       const missingOnCloud = allLocal.filter(i => !remoteCodes.has(i.code));
       if (missingOnCloud.length) await this.upsert(missingOnCloud);
 
-      this.updateBadge(true, `✔ Conectado ao Supabase (${allLocal.length} itens na base).`);
+      const masterCount = allLocal.filter(i => !isSystemRow(i.code)).length;
+      this.updateBadge(true, `✔ Conectado ao Supabase (${masterCount} bens na base).`);
       await refresh();
       return true;
     } catch (e) {
@@ -267,6 +352,7 @@ function switchTab(tabName) {
   if (tabName !== 'scan') stopScan();
   if (tabName === 'reconcile') {
     Cloud.syncAll(false);
+    renderHistory();
     renderReconcile();
   }
   if (tabName === 'master') {
@@ -278,20 +364,69 @@ document.querySelectorAll('.tabs button').forEach(b => {
   b.onclick = () => switchTab(b.dataset.tab);
 });
 
-$('#btnGoReconcile')?.addEventListener('click', () => switchTab('reconcile'));
+/* ====== Modal de Abertura de Novo Inventário (com Senha) ou Entrar em Existente ====== */
+function setSessionModalMode(mode) {
+  sessionModalMode = mode;
+  $('#btnModeNewInv').classList.toggle('sel', mode === 'new');
+  $('#btnModeJoinInv').classList.toggle('sel', mode === 'join');
+  $('#newInvPassGroup').classList.toggle('hidden', mode !== 'new');
+  $('#joinInvGroup').classList.toggle('hidden', mode !== 'join');
+  $('#btnGenerateSessionCode').classList.toggle('hidden', mode !== 'new');
 
-/* ====== Modal de Sessão / Código do Inventário ====== */
-function openSessionModal(forceUser = false) {
+  if (mode === 'new') {
+    $('#sessionPassInput').setAttribute('required', 'required');
+    $('#btnSubmitSession').textContent = '✔ Abrir Novo Inventário';
+  } else {
+    $('#sessionPassInput').removeAttribute('required');
+    $('#btnSubmitSession').textContent = '👥 Entrar na Contagem';
+    renderOpenSessionsChips();
+  }
+}
+
+function renderOpenSessionsChips() {
+  const box = $('#openSessionsList');
+  if (!box) return;
+  const openList = histories.filter(h => h.status !== 'ENCERRADO');
+  if (!openList.length) {
+    box.innerHTML = '<span class="muted">Nenhum inventário aberto encontrado. Crie um novo na opção ao lado.</span>';
+    return;
+  }
+  box.innerHTML = openList.map(h =>
+    `<button type="button" class="chip gold" data-pick-session="${esc(h.sessionCode)}">🏷️ ${esc(h.sessionCode)} (${h.totalCounted || 0} contados)</button>`
+  ).join('');
+  box.querySelectorAll('[data-pick-session]').forEach(btn => {
+    btn.onclick = () => {
+      $('#sessionCodeInput').value = btn.dataset.pickSession;
+    };
+  });
+}
+
+$('#btnModeNewInv')?.addEventListener('click', () => setSessionModalMode('new'));
+$('#btnModeJoinInv')?.addEventListener('click', () => setSessionModalMode('join'));
+
+function openSessionModal(forceUser = false, defaultMode = 'new') {
   stopScan();
   $('#sessionUserInput').value = getUser() || '';
-  $('#sessionCodeInput').value = getSessionCode();
-  $('#sessionResetChecks').checked = false;
+  if (defaultMode === 'new') {
+    const d = new Date();
+    const rand = String(Math.floor(10 + Math.random() * 90));
+    const suggested = histories.some(h => h.sessionCode === getSessionCode())
+      ? `INV-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${rand}`
+      : getSessionCode();
+    $('#sessionCodeInput').value = suggested;
+  } else {
+    $('#sessionCodeInput').value = getSessionCode();
+  }
+  $('#sessionPassInput').value = '';
+  $('#sessionResetChecks').checked = true;
+  setSessionModalMode(defaultMode);
+
   $('#btnCancelSession').classList.toggle('hidden', forceUser && !getUser());
   $('#btnCloseSessionModal').classList.toggle('hidden', forceUser && !getUser());
   $('#sessionModal').classList.remove('hidden');
   setTimeout(() => {
     if (!getUser()) $('#sessionUserInput').focus();
-    else $('#sessionCodeInput').focus();
+    else if (defaultMode === 'new') $('#sessionPassInput').focus();
   }, 80);
 }
 
@@ -306,55 +441,309 @@ $('#btnGenerateSessionCode')?.addEventListener('click', () => {
   $('#sessionCodeInput').value = code;
 });
 
-$('#btnSessionBanner')?.addEventListener('click', () => openSessionModal(false));
-$('#btnOpenSessionModal')?.addEventListener('click', () => openSessionModal(false));
-$('#btnManageSession')?.addEventListener('click', () => openSessionModal(false));
-$('#btnUser')?.addEventListener('click', () => openSessionModal(false));
+$('#btnSessionBanner')?.addEventListener('click', () => openSessionModal(false, 'new'));
+$('#btnOpenSessionModal')?.addEventListener('click', () => openSessionModal(false, 'new'));
+$('#btnManageSession')?.addEventListener('click', () => openSessionModal(false, 'new'));
+$('#btnNewInvFromHist')?.addEventListener('click', () => openSessionModal(false, 'new'));
+$('#btnUser')?.addEventListener('click', () => openSessionModal(false, 'join'));
 $('#btnCloseSessionModal')?.addEventListener('click', closeSessionModal);
 $('#btnCancelSession')?.addEventListener('click', closeSessionModal);
 
 $('#sessionForm')?.addEventListener('submit', async e => {
   e.preventDefault();
   const u = setUser($('#sessionUserInput').value);
-  const c = setSessionCode($('#sessionCodeInput').value);
-  localStorage.setItem('inv_session_manual', '1');
-  const resetChecks = $('#sessionResetChecks').checked;
+  const c = ($('#sessionCodeInput').value || '').trim().toUpperCase();
+  if (!c) return toast('Informe o código do inventário');
 
-  closeSessionModal();
-  if (resetChecks) {
-    await resetOnlyCounts(c, u, false);
+  if (sessionModalMode === 'new') {
+    const pass = ($('#sessionPassInput').value || '').trim();
+    if (!pass) return toast('🔒 Defina uma senha de abertura para o novo inventário!');
+
+    // Salva o estado do inventário anterior no histórico antes de iniciar o novo
+    const prevCode = getSessionCode();
+    if (prevCode && prevCode !== c) {
+      await saveSessionToHistory({ sessionCode: prevCode });
+    }
+
+    setSessionCode(c);
+    localStorage.setItem('inv_session_manual', '1');
+
+    if ($('#sessionResetChecks').checked) {
+      await clearCurrentItemChecksOnly();
+    }
+
+    await Cloud.saveActiveSessionMeta(c, u, pass, 'ABERTO');
+    await saveSessionToHistory({
+      sessionCode: c,
+      status: 'ABERTO',
+      password: pass,
+      startedBy: u,
+      startedAt: new Date().toISOString(),
+      closedBy: null,
+      closedAt: null,
+    });
+    await refresh();
+    closeSessionModal();
+    toast(`✔ Inventário ${c} aberto com senha!`);
   } else {
-    await Cloud.saveActiveSessionMeta(c, u);
+    // Entrando em inventário existente
+    setSessionCode(c);
+    localStorage.setItem('inv_session_manual', '1');
     await Cloud.syncAll(false);
-    toast(`Sessão ativa: ${c} (${u})`);
+    const existing = histories.find(h => h.sessionCode === c);
+    if (existing && existing.snapshot) {
+      await restoreSnapshotToItems(existing.snapshot, c);
+    }
+    await refresh();
+    closeSessionModal();
+    toast(`👥 Conectado ao inventário ${c} como ${u}`);
   }
 });
 
-async function resetOnlyCounts(newSessionCode, userName, askConfirm = true) {
-  if (askConfirm && !confirm('Deseja desmarcar todas as conferências atuais para iniciar uma nova contagem mantendo todos os Dados Mestre?')) {
-    return;
-  }
-  const all = (await DB.all()).filter(i => i.code !== META_ROW_CODE);
+async function clearCurrentItemChecksOnly() {
+  const all = (await DB.all()).filter(i => !isSystemRow(i.code));
   const updated = [];
   for (const it of all) {
-    it.checked = false;
-    it.at = null;
-    it.by = null;
-    if (it.extra) {
-      delete it.extra._inv_session;
-      delete it.extra._count_method;
+    if (it.checked || it.at || it.by) {
+      it.checked = false;
+      it.at = null;
+      it.by = null;
+      if (it.extra) {
+        delete it.extra._inv_session;
+        delete it.extra._count_method;
+      }
+      await DB.put(it);
+      updated.push(it);
+    }
+  }
+  if (updated.length) await Cloud.upsert(updated);
+  $('#result').innerHTML = '';
+}
+
+async function restoreSnapshotToItems(snapshot, sessionCode) {
+  const all = (await DB.all()).filter(i => !isSystemRow(i.code));
+  const updated = [];
+  for (const it of all) {
+    const s = snapshot ? snapshot[it.code] : null;
+    if (s && s.checked) {
+      it.checked = true;
+      it.at = s.at;
+      it.by = s.by;
+      it.extra = { ...(it.extra || {}), _inv_session: sessionCode, _count_method: s.method || 'Leitura Código' };
+    } else {
+      it.checked = false;
+      it.at = null;
+      it.by = null;
     }
     await DB.put(it);
     updated.push(it);
   }
   if (updated.length) await Cloud.upsert(updated);
-  if (newSessionCode) await Cloud.saveActiveSessionMeta(newSessionCode, userName || getUser());
-  await refresh();
-  $('#result').innerHTML = '';
-  toast(`Nova contagem iniciada (${getSessionCode()})!`);
 }
 
-$('#btnResetCounts')?.addEventListener('click', () => resetOnlyCounts(getSessionCode(), getUser(), true));
+/* ====== Validação da Senha de Abertura do Inventário ====== */
+async function getSessionPassword(sessionCode) {
+  if (Cloud.isReady()) {
+    await Cloud.fetchOne(HIST_PREFIX + sessionCode);
+    await Cloud.fetchOne(META_ROW_CODE);
+  }
+  const histRow = await DB.get(HIST_PREFIX + sessionCode);
+  if (histRow?.extra?.password) return String(histRow.extra.password).trim();
+  const metaRow = await DB.get(META_ROW_CODE);
+  if (metaRow?.extra?.sessionCode === sessionCode && metaRow?.extra?.password) {
+    return String(metaRow.extra.password).trim();
+  }
+  return '';
+}
+
+/* ====== Modal 4: ENCERRAR INVENTÁRIO (Com Senha de Abertura, Comparação Opcional, Salva no Histórico) ====== */
+function openCloseInvModal() {
+  stopScan();
+  const s = getSessionCode();
+  $('#closeInvCodeLabel').textContent = s;
+  $('#closeInvPassInput').value = '';
+  $('#closeInvGoCompare').checked = false;
+  $('#closeInvModal').classList.remove('hidden');
+  setTimeout(() => $('#closeInvPassInput').focus(), 80);
+}
+
+function closeCloseInvModal() {
+  $('#closeInvModal').classList.add('hidden');
+}
+
+$('#btnOpenCloseInvModal')?.addEventListener('click', openCloseInvModal);
+$('#btnCloseFromData')?.addEventListener('click', openCloseInvModal);
+$('#btnCancelCloseInv')?.addEventListener('click', closeCloseInvModal);
+
+$('#closeInvForm')?.addEventListener('submit', async e => {
+  e.preventDefault();
+  const s = getSessionCode();
+  const typedPass = ($('#closeInvPassInput').value || '').trim();
+  const savedPass = await getSessionPassword(s);
+
+  if (!savedPass) {
+    // Caso tenha sido iniciado antes de existir senha, aceita e registra a senha informada
+  } else if (typedPass !== savedPass) {
+    navigator.vibrate?.([200, 100, 200]);
+    return toast('❌ Senha incorreta! Informe a senha definida na abertura do inventário.');
+  }
+
+  const goCompare = $('#closeInvGoCompare').checked;
+  const user = getUser() || 'Contador';
+
+  await saveSessionToHistory({
+    sessionCode: s,
+    status: 'ENCERRADO',
+    password: savedPass || typedPass,
+    closedBy: user,
+    closedAt: new Date().toISOString(),
+  });
+  await Cloud.saveActiveSessionMeta(s, user, savedPass || typedPass, 'ENCERRADO');
+  await refresh();
+  closeCloseInvModal();
+
+  toast(`🔒 Inventário ${s} encerrado e salvo no histórico!`);
+  if (goCompare) {
+    switchTab('reconcile');
+  }
+});
+
+/* ====== Reabrir Contagem do Histórico ====== */
+async function reopenInventorySession(sessionCode) {
+  const histRow = await DB.get(HIST_PREFIX + sessionCode);
+  const snap = histRow?.extra?.snapshot || null;
+  const pass = histRow?.extra?.password || '';
+  const user = getUser() || 'Contador';
+
+  setSessionCode(sessionCode);
+  localStorage.setItem('inv_session_manual', '1');
+
+  if (snap) {
+    await restoreSnapshotToItems(snap, sessionCode);
+  }
+
+  await saveSessionToHistory({
+    sessionCode,
+    status: 'ABERTO',
+    password: pass,
+    closedBy: null,
+    closedAt: null,
+  });
+  await Cloud.saveActiveSessionMeta(sessionCode, user, pass, 'ABERTO');
+  await refresh();
+  toast(`🔓 Inventário ${sessionCode} reaberto para contagem!`);
+  switchTab('scan');
+}
+
+$('#btnReopenActiveInv')?.addEventListener('click', () => reopenInventorySession(getSessionCode()));
+$('#btnBannerReopen')?.addEventListener('click', () => reopenInventorySession(getSessionCode()));
+
+/* ====== Modal 5: ELIMINAR CONTAGEM TODA (Exige Senha de Abertura) ====== */
+function openDeleteInvModal(sessionCode) {
+  stopScan();
+  pendingDeleteSessionCode = sessionCode || getSessionCode();
+  $('#deleteInvCodeLabel').textContent = pendingDeleteSessionCode;
+  $('#deleteInvPassInput').value = '';
+  $('#deleteInvModal').classList.remove('hidden');
+  setTimeout(() => $('#deleteInvPassInput').focus(), 80);
+}
+
+function closeDeleteInvModal() {
+  $('#deleteInvModal').classList.add('hidden');
+  pendingDeleteSessionCode = null;
+}
+
+$('#btnOpenDeleteInvModal')?.addEventListener('click', () => openDeleteInvModal(getSessionCode()));
+$('#btnDeleteFromData')?.addEventListener('click', () => openDeleteInvModal(getSessionCode()));
+$('#btnCancelDeleteInv')?.addEventListener('click', closeDeleteInvModal);
+
+$('#deleteInvForm')?.addEventListener('submit', async e => {
+  e.preventDefault();
+  const targetCode = pendingDeleteSessionCode || getSessionCode();
+  const typedPass = ($('#deleteInvPassInput').value || '').trim();
+  const savedPass = await getSessionPassword(targetCode);
+
+  if (savedPass && typedPass !== savedPass) {
+    navigator.vibrate?.([200, 100, 200]);
+    return toast('❌ Senha incorreta! Só é permitido eliminar com a senha de abertura.');
+  }
+
+  // Se for a sessão ativa, limpa todas as contagens dos itens mantendo os Dados Mestre
+  if (targetCode === getSessionCode()) {
+    await clearCurrentItemChecksOnly();
+  }
+
+  // Remove o registro de histórico dessa contagem
+  const histKey = HIST_PREFIX + targetCode;
+  await DB.del(histKey);
+  await Cloud.deleteOne(histKey);
+
+  // Se era a sessão ativa no META, atualiza status sem contagens
+  if (targetCode === getSessionCode()) {
+    await saveSessionToHistory({
+      sessionCode: targetCode,
+      status: 'ABERTO',
+      password: savedPass || typedPass,
+      closedBy: null,
+      closedAt: null,
+    });
+  }
+
+  await refresh();
+  closeDeleteInvModal();
+  toast(`🗑️ Contagem do inventário ${targetCode} eliminada com sucesso!`);
+});
+
+/* ====== Renderização do Histórico de Inventários ====== */
+function renderHistory() {
+  const ul = $('#historyList');
+  if (!ul) return;
+
+  if (!histories.length) {
+    ul.innerHTML = '<li class="empty">Nenhum histórico de inventário registrado ainda.</li>';
+    return;
+  }
+
+  const activeCode = getSessionCode();
+  ul.innerHTML = histories.map(h => {
+    const isCurrent = h.sessionCode === activeCode;
+    const isClosed = h.status === 'ENCERRADO';
+    const dt = h.closedAt
+      ? `Encerrado em ${new Date(h.closedAt).toLocaleString('pt-BR')} por ${esc(h.closedBy || h.startedBy || '—')}`
+      : `Aberto em ${new Date(h.startedAt).toLocaleString('pt-BR')} por ${esc(h.startedBy || '—')}`;
+
+    return `<li>
+      <div class="list-main">
+        <div class="thumb">${isClosed ? '🔒' : '📋'}</div>
+        <div class="info">
+          <b>${esc(h.sessionCode)} ${isCurrent ? '<span class="badge gold">Ativo na tela</span>' : ''}</b>
+          <small>${dt}</small>
+          <small>Contados: <b>${h.totalCounted ?? 0}</b> de ${h.totalMaster ?? items.length} bens</small>
+        </div>
+        <span class="badge ${isClosed ? 'bad' : 'ok'}">${isClosed ? 'ENCERRADO' : 'ABERTO'}</span>
+      </div>
+      <div class="item-actions">
+        ${isClosed
+          ? `<button type="button" class="btn ok" data-hist-reopen="${esc(h.sessionCode)}">🔓 Reabrir Contagem</button>`
+          : (!isCurrent ? `<button type="button" class="btn primary" data-hist-reopen="${esc(h.sessionCode)}">📂 Carregar Contagem</button>` : '')
+        }
+        <button type="button" class="btn danger" data-hist-delete="${esc(h.sessionCode)}">🗑️ Eliminar Contagem</button>
+      </div>
+    </li>`;
+  }).join('');
+}
+
+$('#historyList')?.addEventListener('click', e => {
+  const reopenBtn = e.target.closest('[data-hist-reopen]');
+  if (reopenBtn) {
+    reopenInventorySession(reopenBtn.dataset.histReopen);
+    return;
+  }
+  const delBtn = e.target.closest('[data-hist-delete]');
+  if (delBtn) {
+    openDeleteInvModal(delBtn.dataset.histDelete);
+  }
+});
 
 /* ====== Configuração Supabase na Aba Ajustes ====== */
 function initSupabaseConfig() {
@@ -423,7 +812,6 @@ const ALIAS = {
 };
 
 async function importCSV(file, isReconcileCompare = false) {
-  // Antes de comparar, sincroniza com Supabase para ter todas as contagens de todos os usuários
   if (Cloud.isReady()) await Cloud.syncAll(false);
 
   const rows = parseCSV(decode(await file.arrayBuffer()));
@@ -440,10 +828,6 @@ async function importCSV(file, isReconcileCompare = false) {
   const keep = isReconcileCompare ? true : $('#keepState').checked;
   const old = new Map((await DB.all()).map(i => [i.code, i]));
 
-  if (!isReconcileCompare && !keep) {
-    await DB.clear();
-  }
-
   let n = 0;
   let foundCount = 0;
   let missingCount = 0;
@@ -451,7 +835,7 @@ async function importCSV(file, isReconcileCompare = false) {
 
   for (const r of rows.slice(1)) {
     const code = (r[map.code] || '').trim();
-    if (!code || code === META_ROW_CODE) continue;
+    if (!code || isSystemRow(code)) continue;
     const extra = {};
     heads.forEach((h, i) => { if (!used.has(i) && h && (r[i] || '').trim()) extra[h] = r[i].trim(); });
     const prev = keep ? old.get(code) : null;
@@ -481,6 +865,7 @@ async function importCSV(file, isReconcileCompare = false) {
     await Cloud.upsert(imported);
   }
 
+  await saveSessionToHistory({ sessionCode: getSessionCode() });
   await refresh();
 
   if (isReconcileCompare) {
@@ -500,10 +885,11 @@ async function importCSV(file, isReconcileCompare = false) {
 $('#csvFile').onchange = e => { if (e.target.files[0]) importCSV(e.target.files[0], false); e.target.value = ''; };
 $('#compareCsvFile').onchange = e => { if (e.target.files[0]) importCSV(e.target.files[0], true); e.target.value = ''; };
 $('#btnCompareMaster')?.addEventListener('click', async () => {
-  toast('Atualizando conciliação com Supabase...');
+  toast('Atualizando dados com Supabase...');
   await Cloud.syncAll(false);
+  renderHistory();
   renderReconcile();
-  toast('Conciliação atualizada ✔');
+  toast('Dados atualizados ✔');
 });
 
 /* ====== Exportação CSV Completo ====== */
@@ -532,13 +918,20 @@ $('#btnExport').onclick = () => {
 };
 
 $('#btnReset').onclick = async () => {
-  if (confirm('ATENÇÃO: Apagar TODOS os Dados Mestre, fotos e conferências do banco?')) {
-    await DB.clear();
-    await Cloud.clearRemote();
-    await refresh();
-    $('#result').innerHTML = '';
-    toast('Todos os dados foram apagados');
+  const s = getSessionCode();
+  const savedPass = await getSessionPassword(s);
+  if (savedPass) {
+    const typed = prompt(`Digite a senha de abertura do inventário (${s}) para apagar toda a base:`);
+    if (typed === null) return;
+    if (typed.trim() !== savedPass) return toast('❌ Senha incorreta! Operação cancelada.');
+  } else if (!confirm('ATENÇÃO: Apagar TODOS os Dados Mestre, fotos e históricos do banco?')) {
+    return;
   }
+  await DB.clear();
+  await Cloud.clearRemote();
+  await refresh();
+  $('#result').innerHTML = '';
+  toast('Todos os dados foram apagados');
 };
 
 /* ====== Busca e Contagem com Pop-ups Centralizados ====== */
@@ -553,13 +946,20 @@ async function handleScanOrSearch(rawCode) {
   const code = String(rawCode || '').trim();
   if (!code) return;
 
-  // Garante que o usuário já informou o nome
   if (!getUser()) {
-    openSessionModal(true);
+    openSessionModal(true, 'new');
     return;
   }
 
-  // 1. Consulta o Supabase em tempo real para saber se outro usuário contou ou cadastrou este código
+  if (isCurrentSessionClosed()) {
+    stopScan();
+    if (confirm(`O inventário ${getSessionCode()} está ENCERRADO. Deseja reabri-lo agora para continuar contando?`)) {
+      await reopenInventorySession(getSessionCode());
+    } else {
+      return;
+    }
+  }
+
   let it = findLocal(code);
   if (Cloud.isReady()) {
     const remoteIt = await Cloud.fetchOne(it ? it.code : code);
@@ -569,7 +969,7 @@ async function handleScanOrSearch(rawCode) {
     }
   }
 
-  // 2. Se o código NÃO EXISTE na base mestre -> Abre Pop-up Centralizado no meio da tela!
+  // Se o código NÃO EXISTE na base mestre -> Abre Pop-up Centralizado no meio da tela!
   if (!it) {
     currentCode = null;
     openAskCreatePopup(code);
@@ -577,14 +977,13 @@ async function handleScanOrSearch(rawCode) {
     return;
   }
 
-  // Se estava procurando fisicamente um item específico da tela de conciliação
   if (targetSearchCode && it.code !== targetSearchCode) {
     toast(`⚠️ Código lido (${it.code}) é diferente do item procurado (${targetSearchCode})`);
   } else if (targetSearchCode && it.code === targetSearchCode) {
     clearTargetSearch();
   }
 
-  // 3. Se o item JÁ FOI CONTADO -> Avisa em Pop-up que outro usuário (ou você) já contou!
+  // Se o item JÁ FOI CONTADO -> Avisa em Pop-up que outro usuário (ou você) já contou!
   if (it.checked) {
     renderItemCard(it);
     openAlreadyCountedPopup(it);
@@ -592,7 +991,7 @@ async function handleScanOrSearch(rawCode) {
     return;
   }
 
-  // 4. Item existe e ainda não foi contado -> Registra contagem imediatamente pelo usuário atual!
+  // Item existe e ainda não foi contado -> Registra contagem imediatamente pelo usuário atual!
   const user = getUser() || 'Contador';
   const invSession = getSessionCode();
   it.checked = true;
@@ -606,6 +1005,7 @@ async function handleScanOrSearch(rawCode) {
 
   await DB.put(it);
   await Cloud.upsert([it]);
+  await saveSessionToHistory({ sessionCode: invSession });
   await refresh();
   renderItemCard(it);
   navigator.vibrate?.(90);
@@ -633,14 +1033,12 @@ function closeAskCreatePopup(resumeCamera = false) {
   }
 }
 
-// Se marcar que NÃO: não faz nada e espera a próxima leitura de código de barras
 $('#btnPopupAskNo')?.addEventListener('click', () => {
   pendingNewBarcode = '';
   closeAskCreatePopup(true);
   toast('Aguardando próxima leitura de código...');
 });
 
-// Se responder que SIM: abre a tela com o código de barras cadastrado solicitando os dados faltantes + foto opcional
 $('#btnPopupAskYes')?.addEventListener('click', () => {
   const codeToCreate = pendingNewBarcode;
   pendingNewBarcode = '';
@@ -723,7 +1121,6 @@ function renderItemCard(it) {
 /* ====== Tela de Cadastro / Edição de Item (Dados Mestre + Novos Itens) ====== */
 function openCreateModal(code = '', existingItem = null, createdFromScan = false) {
   stopScan();
-  editingMasterMode = Boolean(existingItem);
   newItemPhotoData = existingItem?.photo || null;
 
   $('#createTitle').textContent = existingItem
@@ -745,7 +1142,7 @@ function openCreateModal(code = '', existingItem = null, createdFromScan = false
   $('#newLoc').value = existingItem?.loc || '';
   $('#newState').value = existingItem?.extra?._state || 'Bom';
   $('#newObs').value = existingItem?.obs || '';
-  $('#newChecked').checked = existingItem ? Boolean(existingItem.checked) : true;
+  $('#newChecked').checked = existingItem ? Boolean(existingItem.checked) : !isCurrentSessionClosed();
   $('#createForm').dataset.createdFromScan = createdFromScan ? '1' : '';
 
   if (newItemPhotoData) {
@@ -855,6 +1252,7 @@ $('#createForm').onsubmit = async e => {
 
   await DB.put(item);
   await Cloud.upsert([item]);
+  await saveSessionToHistory({ sessionCode: invSession });
   await refresh();
   closeCreateModal();
   renderItemCard(item);
@@ -862,6 +1260,9 @@ $('#createForm').onsubmit = async e => {
 };
 
 async function toggleCheck(code) {
+  if (isCurrentSessionClosed()) {
+    return toast('🔒 Inventário encerrado! Reabra a contagem para alterar.');
+  }
   const it = await DB.get(code);
   if (!it) return;
   if (it.checked) {
@@ -880,6 +1281,7 @@ async function toggleCheck(code) {
   }
   await DB.put(it);
   await Cloud.upsert([it]);
+  await saveSessionToHistory({ sessionCode: getSessionCode() });
   await refresh();
   renderItemCard(it);
   toast(it.checked ? 'Item conferido ✔' : 'Conferência desfeita');
@@ -912,7 +1314,7 @@ function shrink(file, max) {
   });
 }
 
-/* ====== ABA 2: CONCILIAÇÃO (COMPARAR CSV, WHATSAPP, PROCURAR FISICAMENTE OU ACEITAR COMO ENCONTRADO) ====== */
+/* ====== ABA 2: CONCILIAÇÃO (COMPARAR CSV OPCIONAL, WHATSAPP, PROCURAR OU ACEITAR COMO ENCONTRADO) ====== */
 function renderReconcile() {
   const q = norm($('#searchReconcile')?.value || '');
   const list = items.filter(i => {
@@ -930,7 +1332,7 @@ function renderReconcile() {
     return;
   }
   if (!list.length) {
-    ul.innerHTML = `<li class="empty">${reconcileFilter === 'pend' ? '🎉 Parabéns! Todos os itens foram encontrados!' : 'Nenhum item para este filtro.'}</li>`;
+    ul.innerHTML = `<li class="empty">${reconcileFilter === 'pend' ? '🎉 Todos os itens foram encontrados!' : 'Nenhum item para este filtro.'}</li>`;
     return;
   }
 
@@ -984,7 +1386,6 @@ $('#reconcileList')?.addEventListener('click', async e => {
   }
 });
 
-// Procurar item fisicamente e ler código de barras
 function startTargetSearch(code) {
   const it = findLocal(code);
   if (!it) return;
@@ -1005,8 +1406,11 @@ function clearTargetSearch() {
 
 $('#btnCancelTargetScan')?.addEventListener('click', clearTargetSearch);
 
-// Apenas afirmar que o item existe e aceitar como encontrado
 async function acceptMissingItemAsFound(code) {
+  if (isCurrentSessionClosed()) {
+    if (!confirm(`O inventário ${getSessionCode()} está encerrado. Deseja reabri-lo para aceitar este item?`)) return;
+    await reopenInventorySession(getSessionCode());
+  }
   const it = await DB.get(code);
   if (!it) return;
   const user = getUser() || setUser('Contador');
@@ -1023,6 +1427,7 @@ async function acceptMissingItemAsFound(code) {
 
   await DB.put(it);
   await Cloud.upsert([it]);
+  await saveSessionToHistory({ sessionCode: invSession });
   await refresh();
   toast(`✔ "${it.desc}" aceito como encontrado!`);
 }
@@ -1088,7 +1493,6 @@ $('#btnShareWhatsapp')?.addEventListener('click', async () => {
   const invCode = getSessionCode();
   const missing = items.filter(i => !i.checked);
 
-  // Tenta compartilhar o arquivo + texto nativamente no celular (Web Share API para WhatsApp)
   if (navigator.canShare && missing.length > 0) {
     try {
       const csvFile = new File([buildMissingCSVBlob()], `nao_encontrados_${invCode}.csv`, { type: 'text/csv' });
@@ -1105,7 +1509,6 @@ $('#btnShareWhatsapp')?.addEventListener('click', async () => {
     }
   }
 
-  // Fallback direto para WhatsApp com a lista completa formatada
   const waUrl = `https://wa.me/?text=${encodeURIComponent(text)}`;
   window.open(waUrl, '_blank');
 });
@@ -1114,7 +1517,6 @@ $('#btnShareWhatsapp')?.addEventListener('click', async () => {
 function renderMaster() {
   if ($('#masterCount')) $('#masterCount').textContent = items.length;
 
-  // Atualiza filtros de categoria e local mantendo seleção
   const catSel = $('#filterMasterCat');
   const locSel = $('#filterMasterLoc');
   if (catSel && locSel) {
@@ -1167,11 +1569,17 @@ $('#searchMaster')?.addEventListener('input', renderMaster);
 $('#filterMasterCat')?.addEventListener('change', renderMaster);
 $('#filterMasterLoc')?.addEventListener('change', renderMaster);
 
-/* ====== Atualização Geral de Indicadores ====== */
+/* ====== Atualização Geral de Indicadores e Históricos ====== */
 async function refresh() {
-  items = (await DB.all())
-    .filter(i => i.code !== META_ROW_CODE)
+  const allRows = await DB.all();
+  items = allRows
+    .filter(i => !isSystemRow(i.code))
     .sort((a, b) => a.desc.localeCompare(b.desc, 'pt-BR'));
+
+  histories = allRows
+    .filter(i => String(i.code).startsWith(HIST_PREFIX) && i.extra?.sessionCode)
+    .map(i => i.extra)
+    .sort((a, b) => String(b.updatedAt || b.startedAt || '').localeCompare(String(a.updatedAt || a.startedAt || '')));
 
   const ok = items.filter(i => i.checked).length;
   const createdSpot = items.filter(i => i.extra?._created_on_spot).length;
@@ -1181,6 +1589,8 @@ async function refresh() {
   if ($('#stNew')) $('#stNew').textContent = createdSpot;
   if ($('#progress')) $('#progress').style.width = items.length ? (ok / items.length * 100) + '%' : '0';
 
+  updateSessionUI();
+  renderHistory();
   renderReconcile();
   renderMaster();
 }
@@ -1195,6 +1605,10 @@ function onCode(code) {
   handleScanOrSearch(code);
 }
 async function startScan() {
+  if (isCurrentSessionClosed()) {
+    toast('🔒 Inventário encerrado! Reabra para usar o leitor.');
+    return;
+  }
   const sc = document.querySelector('.scanner'), video = $('#video');
   try {
     if ('BarcodeDetector' in window) {
@@ -1259,20 +1673,18 @@ $('#manualForm').onsubmit = e => {
 (async () => {
   await DB.open();
   initSupabaseConfig();
-  updateSessionUI();
   await refresh();
 
   if (Cloud.isReady()) {
     await Cloud.syncAll(false);
-    // Sincronização periódica automática para múltiplos usuários contarem juntos
     setInterval(() => {
       if (document.visibilityState === 'visible') Cloud.syncAll(false);
     }, 10000);
   }
 
-  // Se o usuário ainda não definiu seu nome/código de inventário neste aparelho, abre o pop-up inicial
-  if (!getUser()) {
-    openSessionModal(true);
+  // Se o usuário ainda não abriu ou entrou em um inventário neste aparelho, solicita nome, código e senha de abertura
+  if (!getUser() || !histories.some(h => h.sessionCode === getSessionCode())) {
+    openSessionModal(true, 'new');
   }
 
   if ($('#importMsg')) $('#importMsg').textContent = localStorage.getItem('lastImport') || '';

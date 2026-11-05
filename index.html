@@ -19,6 +19,7 @@
     <p>
       <span id="cloudBadge" class="cloud-badge" title="Status do banco Supabase">☁️ Supabase</span>
       <button id="btnSessionBanner" class="session-pill" title="Trocar ou iniciar código de inventário">🏷️ <span id="sessionCodeLabel">INV-001</span></button>
+      <span id="sessionStatusBadge" class="badge ok">ABERTO</span>
     </p>
   </div>
   <button id="btnUser" class="chip" title="Trocar usuário">👤 <span id="userName">—</span></button>
@@ -29,13 +30,23 @@
   <section id="tab-scan" class="tab active">
     <div class="session-bar">
       <div>
-        <small class="muted">Inventário ativo</small>
+        <small class="muted">Inventário ativo (<span id="scanSessionStatusText">Em contagem</span>)</small>
         <strong id="scanSessionTitle">INV-2026-01</strong>
       </div>
       <div class="session-actions">
-        <button type="button" id="btnOpenSessionModal" class="chip">🔄 Novo / Trocar Código</button>
-        <button type="button" id="btnGoReconcile" class="chip gold">🏁 Encerrar / Comparar</button>
+        <button type="button" id="btnOpenSessionModal" class="chip">➕ Novo / Trocar</button>
+        <button type="button" id="btnOpenCloseInvModal" class="chip gold">🏁 Encerrar</button>
+        <button type="button" id="btnReopenActiveInv" class="chip ok hidden">🔓 Reabrir</button>
+        <button type="button" id="btnOpenDeleteInvModal" class="chip danger-chip" title="Eliminar contagem atual">🗑️ Eliminar</button>
       </div>
+    </div>
+
+    <div id="closedSessionBanner" class="closed-banner hidden">
+      <div>
+        <strong>🔒 Este inventário está ENCERRADO no histórico.</strong>
+        <small>Para continuar lendo códigos nele, toque em Reabrir Contagem ou inicie um Novo Inventário.</small>
+      </div>
+      <button type="button" id="btnBannerReopen" class="btn ok small">🔓 Reabrir</button>
     </div>
 
     <div id="targetScanBanner" class="target-banner hidden">
@@ -63,16 +74,26 @@
     <div id="result"></div>
   </section>
 
-  <!-- ABA 2: CONCILIAÇÃO (COMPARAR CSV E ITENS NÃO ENCONTRADOS) -->
+  <!-- ABA 2: CONCILIAÇÃO & HISTÓRICO DE INVENTÁRIOS -->
   <section id="tab-reconcile" class="tab">
+    <!-- HISTÓRICO DE CONTAGENS -->
     <div class="card">
-      <h2>🏁 Conciliação do Inventário (<span id="recSessionCode">INV</span>)</h2>
-      <p class="muted">Compare a contagem atual dos usuários com o arquivo CSV da base oficial para identificar os itens não encontrados.</p>
-      <div class="row">
+      <div class="modal-head" style="margin-bottom:4px">
+        <h2>📜 Histórico de Inventários</h2>
+        <button type="button" id="btnNewInvFromHist" class="chip gold">➕ Novo Inventário</button>
+      </div>
+      <p class="muted">Contagens salvas/encerradas. Você pode reabrir qualquer contagem para continuar lendo, consultar ou eliminar (mediante senha de abertura).</p>
+      <ul id="historyList" class="list" style="margin-top:10px"></ul>
+    </div>
+
+    <div class="card">
+      <h2>⚖️ Comparação Opcional com CSV (<span id="recSessionCode">INV</span>)</h2>
+      <p class="muted">A comparação não é obrigatória para encerrar. Quando desejar confrontar a contagem com uma planilha externa, carregue o CSV abaixo.</p>
+      <div class="row wrap-row">
         <label class="btn primary file">📂 Carregar CSV para Comparar
           <input id="compareCsvFile" type="file" accept=".csv,text/csv,text/plain" hidden>
         </label>
-        <button type="button" id="btnCompareMaster" class="btn" title="Comparar com a base mestre atual">🔄 Atualizar</button>
+        <button type="button" id="btnCompareMaster" class="btn" title="Atualizar dados com Supabase">🔄 Atualizar</button>
       </div>
       <p id="compareMsg" class="muted"></p>
     </div>
@@ -87,10 +108,10 @@
 
     <div class="card whatsapp-card">
       <h2>📲 Relatório de Não Encontrados (WhatsApp)</h2>
-      <p class="muted">Gere o arquivo ou envie a lista de itens pendentes/não encontrados diretamente para o WhatsApp da equipe.</p>
+      <p class="muted">Gere o arquivo ou envie a lista de itens não encontrados para o WhatsApp para conferência física.</p>
       <div class="row wrap-row">
         <button type="button" id="btnShareWhatsapp" class="btn ok primary">📲 Enviar para WhatsApp</button>
-        <button type="button" id="btnDownloadMissing" class="btn">📄 Baixar Arquivo (.txt / .csv)</button>
+        <button type="button" id="btnDownloadMissing" class="btn">📄 Baixar Arquivo (.csv)</button>
       </div>
     </div>
 
@@ -132,10 +153,12 @@
   <!-- ABA 4: CONFIGURAÇÕES / SESSÃO / SUPABASE -->
   <section id="tab-data" class="tab">
     <div class="card">
-      <h2>🏷️ Sessão de Inventário Multi-usuário</h2>
-      <p class="muted">Defina o código do inventário para que vários usuários contem juntos em tempo real. Quando um usuário iniciar uma nova contagem, pode zerar apenas os vistos de conferência mantendo os Dados Mestre.</p>
-      <div class="row">
-        <button type="button" id="btnManageSession" class="btn primary">🏷️ Gerenciar Código do Inventário</button>
+      <h2>🏷️ Controle de Sessão e Contagem</h2>
+      <p class="muted">Gerencie o código do inventário ativo, encerre para guardar no histórico ou elimine a contagem atual mediante senha de abertura.</p>
+      <div class="row wrap-row">
+        <button type="button" id="btnManageSession" class="btn primary">🏷️ Novo / Trocar Inventário</button>
+        <button type="button" id="btnCloseFromData" class="btn">🏁 Encerrar Inventário</button>
+        <button type="button" id="btnDeleteFromData" class="btn danger">🗑️ Eliminar Contagem</button>
       </div>
     </div>
 
@@ -151,7 +174,7 @@
 
     <div class="card">
       <h2>⬇️ Exportar Relatório Completo (CSV)</h2>
-      <p class="muted">Exporta toda a base com código do inventário, situação (Conferido / Aceito Manualmente / Pendente), usuário e data/hora.</p>
+      <p class="muted">Exporta toda a base com código do inventário, situação (Encontrado / Aceito Manualmente / Pendente), usuário e data/hora.</p>
       <button id="btnExport" class="btn">⬇️ Exportar CSV Completo</button>
     </div>
 
@@ -174,11 +197,9 @@
     </div>
 
     <div class="card danger">
-      <h2>Limpar dados</h2>
-      <div class="row wrap-row">
-        <button id="btnResetCounts" class="btn">🔄 Zerar Apenas Contagens</button>
-        <button id="btnReset" class="btn danger">🗑️ Apagar Tudo (Base + Contagens)</button>
-      </div>
+      <h2>Apagar Base Mestre Completa</h2>
+      <p class="muted">Remove todos os bens cadastrados nos Dados Mestre e históricos (requer senha do inventário ativo se houver).</p>
+      <button id="btnReset" class="btn danger">🗑️ Apagar Tudo (Base Mestre + Histórico)</button>
     </div>
   </section>
 </main>
@@ -211,31 +232,92 @@
   </div>
 </div>
 
-<!-- POP-UP CENTRALIZADO 3: INICIAR / ENTRAR EM CÓDIGO DE INVENTÁRIO -->
+<!-- POP-UP CENTRALIZADO 3: INICIAR NOVO INVENTÁRIO (COM SENHA) OU PARTICIPAR DE EXISTENTE -->
 <div id="sessionModal" class="modal center-modal hidden" role="dialog" aria-modal="true">
   <div class="modal-box popup-card">
     <div class="modal-head">
-      <h2>🏷️ Código do Inventário</h2>
+      <h2>🏷️ Iniciar / Entrar no Inventário</h2>
       <button type="button" id="btnCloseSessionModal" class="chip">✖</button>
     </div>
-    <p class="muted" style="text-align:left">Informe o código do inventário para que todos os usuários contem na mesma sessão, ou gere um novo código para iniciar uma nova contagem.</p>
+
+    <div class="mode-switch">
+      <button type="button" id="btnModeNewInv" class="chip sel">➕ Abrir Novo Inventário</button>
+      <button type="button" id="btnModeJoinInv" class="chip">👥 Entrar em Existente</button>
+    </div>
+
     <form id="sessionForm" class="form-stack">
       <label class="field-label">Seu Nome (Responsável / Contador) *
         <input id="sessionUserInput" type="text" required placeholder="Ex.: Fernando">
       </label>
+
       <label class="field-label">Código do Inventário *
         <div class="row" style="margin-top:0">
           <input id="sessionCodeInput" type="text" required placeholder="Ex.: INV-2026-01">
           <button type="button" id="btnGenerateSessionCode" class="btn" title="Gerar novo código automático">⚡ Gerar</button>
         </div>
       </label>
-      <label class="check">
-        <input type="checkbox" id="sessionResetChecks">
-        Iniciar nova contagem do zero (desmarcar conferências anteriores)
-      </label>
+
+      <div id="newInvPassGroup" class="form-stack" style="margin-top:0">
+        <label class="field-label">🔒 Senha de Abertura do Inventário *
+          <input id="sessionPassInput" type="password" placeholder="Defina uma senha para encerrar/eliminar" autocomplete="new-password">
+        </label>
+        <small class="muted" style="text-align:left;margin-top:-6px">Esta senha será exigida para encerrar ou eliminar este inventário.</small>
+        <label class="check">
+          <input type="checkbox" id="sessionResetChecks" checked>
+          Iniciar contagem limpa para este novo inventário (mantém Dados Mestre e salva anterior no histórico)
+        </label>
+      </div>
+
+      <div id="joinInvGroup" class="hidden" style="text-align:left">
+        <p class="muted" style="margin:0">Escolha um inventário aberto na nuvem ou digite o código acima para contar junto com outros usuários:</p>
+        <div id="openSessionsList" class="chips-wrap" style="margin-top:8px"></div>
+      </div>
+
       <div class="row">
         <button type="button" id="btnCancelSession" class="btn">Cancelar</button>
-        <button type="submit" class="btn ok primary">✔ Confirmar Sessão</button>
+        <button type="submit" id="btnSubmitSession" class="btn ok primary">✔ Confirmar e Iniciar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- POP-UP CENTRALIZADO 4: ENCERRAR INVENTÁRIO (EXIGE SENHA DE ABERTURA, COMPARAÇÃO OPCIONAL) -->
+<div id="closeInvModal" class="modal center-modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box popup-card">
+    <div class="popup-icon">🏁</div>
+    <h2>Encerrar Inventário</h2>
+    <div id="closeInvCodeLabel" class="code popup-code"></div>
+    <p class="muted">A contagem ficará salva no <b>Histórico</b> e poderá ser reaberta quando você quiser. A comparação com arquivo CSV é opcional.</p>
+    <form id="closeInvForm" class="form-stack">
+      <label class="field-label">🔒 Informe a Senha de Abertura para encerrar *
+        <input id="closeInvPassInput" type="password" required placeholder="Digite a senha definida na abertura" autocomplete="off">
+      </label>
+      <label class="check">
+        <input type="checkbox" id="closeInvGoCompare">
+        Ir para a tela de comparação com CSV / WhatsApp após encerrar (opcional)
+      </label>
+      <div class="row">
+        <button type="button" id="btnCancelCloseInv" class="btn">Cancelar</button>
+        <button type="submit" class="btn ok primary">🔒 Encerrar e Salvar no Histórico</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- POP-UP CENTRALIZADO 5: ELIMINAR CONTAGEM TODA (EXIGE SENHA DE ABERTURA) -->
+<div id="deleteInvModal" class="modal center-modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box popup-card warn-popup">
+    <div class="popup-icon">🗑️</div>
+    <h2>Eliminar Contagem</h2>
+    <div id="deleteInvCodeLabel" class="code popup-code"></div>
+    <p class="muted">Isto eliminará toda a contagem deste inventário (os Dados Mestre dos bens serão preservados). Informe a senha de abertura para confirmar:</p>
+    <form id="deleteInvForm" class="form-stack">
+      <label class="field-label">🔒 Senha de Abertura do Inventário *
+        <input id="deleteInvPassInput" type="password" required placeholder="Digite a senha de abertura" autocomplete="off">
+      </label>
+      <div class="row">
+        <button type="button" id="btnCancelDeleteInv" class="btn">Cancelar</button>
+        <button type="submit" class="btn danger primary" style="background:var(--bad);color:#fff;border:0">🗑️ Confirmar Eliminação</button>
       </div>
     </form>
   </div>
@@ -307,7 +389,7 @@
 
 <nav class="tabs">
   <button data-tab="scan" class="active"><i>📷</i>Contar</button>
-  <button data-tab="reconcile"><i>⚖️</i>Conciliar</button>
+  <button data-tab="reconcile"><i>📜</i>Histórico / CSV</button>
   <button data-tab="master"><i>🏛️</i>Dados Mestre</button>
   <button data-tab="data"><i>⚙️</i>Ajustes</button>
 </nav>
