@@ -1,6 +1,9 @@
 'use strict';
 
-/* ====== Configuração Padrão do Supabase ====== */
+/* ====== Versão do Aplicativo e Configuração Padrão do Supabase ====== */
+const APP_VERSION = 'v1.10.0';
+const APP_BUILD_DATE = '05/11/2026 00:40';
+const APP_BUILD_NOTES = 'Fotos leves em miniatura (300px) + indicador de versão em Ajustes';
 const DEFAULT_SUPABASE_URL = 'https://vjdcsautoooubtjdhswk.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_fmDYGqwIa1IY_B-iNZ4XAQ_QUP1BNmb';
 const META_ROW_CODE = '__INV_META__';
@@ -2100,5 +2103,25 @@ $('#manualForm').onsubmit = e => {
   }
 
   if ($('#importMsg')) $('#importMsg').textContent = localStorage.getItem('lastImport') || '';
+  if ($('#appVersionBadge')) $('#appVersionBadge').textContent = APP_VERSION;
+  if ($('#appVersionInfo')) {
+    $('#appVersionInfo').innerHTML = `Versão rodando: <b>${esc(APP_VERSION)}</b> · Deploy: <b>${esc(APP_BUILD_DATE)}</b><br><small>${esc(APP_BUILD_NOTES)}</small>`;
+  }
+  if ($('#btnForceUpdate')) {
+    $('#btnForceUpdate').onclick = async () => {
+      toast('Limpando cache e buscando última versão...');
+      try {
+        if ('serviceWorker' in navigator) {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          for (const r of regs) await r.unregister();
+        }
+        if ('caches' in window) {
+          const keys = await caches.keys();
+          for (const k of keys) await caches.delete(k);
+        }
+      } catch { }
+      location.reload(true);
+    };
+  }
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
 })();
