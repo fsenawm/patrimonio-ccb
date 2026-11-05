@@ -1,9 +1,9 @@
 'use strict';
 
 /* ====== Versão do Aplicativo e Configuração Padrão do Supabase ====== */
-const APP_VERSION = 'v1.10.0';
-const APP_BUILD_DATE = '05/11/2026 00:40';
-const APP_BUILD_NOTES = 'Fotos leves em miniatura (300px) + indicador de versão em Ajustes';
+const APP_VERSION = 'v1.11.0';
+const APP_BUILD_DATE = '05/11/2026 00:43';
+const APP_BUILD_NOTES = 'Identificação automática do nome/modelo real do aparelho + fotos leves';
 const DEFAULT_SUPABASE_URL = 'https://vjdcsautoooubtjdhswk.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_fmDYGqwIa1IY_B-iNZ4XAQ_QUP1BNmb';
 const META_ROW_CODE = '__INV_META__';
@@ -56,58 +56,184 @@ let pendingDeleteSessionCode = null;
 let pendingReopenSessionCode = null;
 let syncBusy = false;
 
-/* ====== Detecção e Gestão do Nome do Dispositivo ====== */
+/* ====== Detecção Automática do Nome / Modelo do Aparelho ====== */
+const SAMSUNG_MODELS = {
+  'SM-S928': 'Samsung Galaxy S24 Ultra',
+  'SM-S926': 'Samsung Galaxy S24+',
+  'SM-S921': 'Samsung Galaxy S24',
+  'SM-S918': 'Samsung Galaxy S23 Ultra',
+  'SM-S916': 'Samsung Galaxy S23+',
+  'SM-S911': 'Samsung Galaxy S23',
+  'SM-S711': 'Samsung Galaxy S23 FE',
+  'SM-S908': 'Samsung Galaxy S22 Ultra',
+  'SM-S906': 'Samsung Galaxy S22+',
+  'SM-S901': 'Samsung Galaxy S22',
+  'SM-G990': 'Samsung Galaxy S21 FE',
+  'SM-G998': 'Samsung Galaxy S21 Ultra',
+  'SM-G996': 'Samsung Galaxy S21+',
+  'SM-G991': 'Samsung Galaxy S21',
+  'SM-A556': 'Samsung Galaxy A55',
+  'SM-A546': 'Samsung Galaxy A54',
+  'SM-A536': 'Samsung Galaxy A53',
+  'SM-A528': 'Samsung Galaxy A52s',
+  'SM-A525': 'Samsung Galaxy A52',
+  'SM-A356': 'Samsung Galaxy A35',
+  'SM-A346': 'Samsung Galaxy A34',
+  'SM-A336': 'Samsung Galaxy A33',
+  'SM-A256': 'Samsung Galaxy A25',
+  'SM-A245': 'Samsung Galaxy A24',
+  'SM-A156': 'Samsung Galaxy A15 5G',
+  'SM-A155': 'Samsung Galaxy A15',
+  'SM-A146': 'Samsung Galaxy A14 5G',
+  'SM-A145': 'Samsung Galaxy A14',
+  'SM-A057': 'Samsung Galaxy A05s',
+  'SM-A055': 'Samsung Galaxy A05',
+  'SM-M546': 'Samsung Galaxy M54',
+  'SM-M346': 'Samsung Galaxy M34',
+  'SM-M146': 'Samsung Galaxy M14',
+};
+
+function friendlyHardwareModel(rawModel) {
+  let m = String(rawModel || '').trim();
+  if (!m) return '';
+  m = m.replace(/\s+Build\/.*$/i, '').trim();
+  if (m === 'K' || m === 'wv' || m === 'Linux' || m === 'Android') return '';
+
+  const upper = m.toUpperCase();
+  for (const prefix in SAMSUNG_MODELS) {
+    if (upper.startsWith(prefix)) {
+      return `${SAMSUNG_MODELS[prefix]} (${m})`;
+    }
+  }
+  if (upper.startsWith('SM-') && !/samsung/i.test(m)) {
+    return `Samsung ${m}`;
+  }
+  if (/^M\d{4}|^2\d{6}/i.test(m) && !/xiaomi|redmi|poco/i.test(m)) {
+    return `Xiaomi (${m})`;
+  }
+  if (/^XT\d{4}/i.test(m) && !/moto/i.test(m)) {
+    return `Motorola (${m})`;
+  }
+  return m;
+}
+
+function getGpuRenderer() {
+  try {
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+    if (!gl) return '';
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    return dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '') : '';
+  } catch {
+    return '';
+  }
+}
+
+function detectIphoneModel() {
+  const w = Math.min(window.screen.width, window.screen.height);
+  const h = Math.max(window.screen.width, window.screen.height);
+  const dpr = window.devicePixelRatio || 1;
+  const sig = `${w}x${h}@${dpr}`;
+  const map = {
+    '440x956@3': 'iPhone 16 Pro Max',
+    '402x874@3': 'iPhone 16 Pro',
+    '430x932@3': 'iPhone 14/15/16 Plus ou Pro Max',
+    '393x852@3': 'iPhone 14 Pro / 15 / 16',
+    '428x926@3': 'iPhone 12/13 Pro Max ou 14 Plus',
+    '390x844@3': 'iPhone 12 / 13 / 14',
+    '375x812@3': 'iPhone X / XS / 11 Pro / 12-13 mini',
+    '414x896@3': 'iPhone XS Max / 11 Pro Max',
+    '414x896@2': 'iPhone XR / 11',
+    '375x667@2': 'iPhone SE / 8',
+    '414x736@3': 'iPhone 8 Plus',
+  };
+  return map[sig] || `iPhone (${w}x${h})`;
+}
+
+let cachedAutoDevice = '';
+
 function detectDefaultDevice() {
+  if (cachedAutoDevice) return cachedAutoDevice;
+
   const ua = navigator.userAgent || '';
-  let os = 'Dispositivo';
   if (/android/i.test(ua)) {
     const m = ua.match(/Android\s+[\d.]+;\s*([^;)]+?)(?:\s+Build\/|\))/i);
-    os = m && m[1] ? `Android (${m[1].trim()})` : 'Android';
-  } else if (/iPhone/i.test(ua)) {
-    os = 'iPhone (iOS)';
-  } else if (/iPad/i.test(ua)) {
-    os = 'iPad (iPadOS)';
-  } else if (/Windows/i.test(ua)) {
-    os = 'Windows PC';
-  } else if (/Macintosh|Mac OS X/i.test(ua)) {
-    os = 'Mac';
-  } else if (/Linux/i.test(ua)) {
-    os = 'Linux PC';
+    const raw = m && m[1] ? m[1].trim() : '';
+    const friendly = friendlyHardwareModel(raw);
+    if (friendly) {
+      cachedAutoDevice = friendly;
+      return cachedAutoDevice;
+    }
+    const gpu = getGpuRenderer().replace(/ANGLE\s*\(([^)]+)\)/i, '$1');
+    const gpuShort = gpu.split(',')[0]?.trim();
+    cachedAutoDevice = gpuShort ? `Smartphone Android (${gpuShort})` : 'Smartphone Android';
+    return cachedAutoDevice;
   }
 
-  let browser = '';
-  if (/Edg\//i.test(ua)) browser = 'Edge';
-  else if (/OPR\//i.test(ua)) browser = 'Opera';
-  else if (/Chrome\//i.test(ua)) browser = 'Chrome';
-  else if (/Safari\//i.test(ua) && !/Chrome/i.test(ua)) browser = 'Safari';
-  else if (/Firefox\//i.test(ua)) browser = 'Firefox';
+  if (/iPhone/i.test(ua)) {
+    cachedAutoDevice = detectIphoneModel();
+    return cachedAutoDevice;
+  }
 
-  return browser ? `${os} · ${browser}` : os;
+  if (/iPad/i.test(ua) || (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1)) {
+    const w = Math.min(window.screen.width, window.screen.height);
+    const h = Math.max(window.screen.width, window.screen.height);
+    cachedAutoDevice = `iPad (${w}x${h})`;
+    return cachedAutoDevice;
+  }
+
+  if (/Windows/i.test(ua)) {
+    const cores = navigator.hardwareConcurrency ? `${navigator.hardwareConcurrency} núcleos` : '';
+    cachedAutoDevice = cores ? `PC Windows (${cores})` : 'PC Windows';
+    return cachedAutoDevice;
+  }
+
+  if (/Macintosh|Mac OS X/i.test(ua)) {
+    cachedAutoDevice = 'Apple Mac';
+    return cachedAutoDevice;
+  }
+
+  if (/Linux/i.test(ua)) {
+    cachedAutoDevice = 'Computador Linux';
+    return cachedAutoDevice;
+  }
+
+  cachedAutoDevice = 'Aparelho Mobile/Web';
+  return cachedAutoDevice;
 }
 
-// Tenta refinar o modelo do aparelho via Client Hints (Android Chrome moderno)
-if (navigator.userAgentData?.getHighEntropyValues) {
-  navigator.userAgentData.getHighEntropyValues(['model', 'platform']).then(info => {
-    if (info?.model && !localStorage.getItem('device_manual')) {
-      const label = `${info.platform || 'Android'} (${info.model})`;
-      localStorage.setItem('device_name', label);
-    }
-  }).catch(() => {});
+async function resolveExactDeviceName() {
+  if (navigator.userAgentData?.getHighEntropyValues) {
+    try {
+      const info = await navigator.userAgentData.getHighEntropyValues(['model', 'platform', 'platformVersion']);
+      if (info?.model) {
+        const friendly = friendlyHardwareModel(info.model);
+        if (friendly) {
+          cachedAutoDevice = friendly;
+          localStorage.setItem('device_name', friendly);
+          if ($('#sessionDeviceInput')) $('#sessionDeviceInput').value = friendly;
+          return friendly;
+        }
+      }
+    } catch { }
+  }
+  const fallback = detectDefaultDevice();
+  localStorage.setItem('device_name', fallback);
+  if ($('#sessionDeviceInput')) $('#sessionDeviceInput').value = fallback;
+  return fallback;
 }
+
+// Dispara a detecção do modelo exato do aparelho assim que o app carrega
+resolveExactDeviceName();
 
 function getDevice() {
-  let d = (localStorage.getItem('device_name') || '').trim();
-  if (!d) {
-    d = detectDefaultDevice();
-    localStorage.setItem('device_name', d);
-  }
-  return d;
+  return cachedAutoDevice || localStorage.getItem('device_name') || detectDefaultDevice();
 }
 
 function setDevice(devName) {
-  const clean = (devName || '').trim() || detectDefaultDevice();
+  const auto = getDevice();
+  const clean = (devName || '').trim() || auto;
   localStorage.setItem('device_name', clean);
-  localStorage.setItem('device_manual', '1');
   return clean;
 }
 
@@ -510,6 +636,7 @@ async function openSessionModal(forceUser = false) {
   }
 
   const openInv = findGlobalOpenInventory();
+  await resolveExactDeviceName();
   $('#sessionUserInput').value = getUser() || '';
   $('#sessionDeviceInput').value = getDevice();
   $('#sessionPassInput').value = '';
