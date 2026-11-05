@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Patrimônio – Congregação Cristã no Brasil</title>
-<meta name="description" content="Inventário de patrimônio da Congregação Cristã no Brasil: leia o código de barras, consulte o item e confira o inventário.">
+<meta name="description" content="Gestão de Dados Mestre e Inventário de Patrimônio da Congregação Cristã no Brasil.">
 <meta name="theme-color" content="#0f2a4a">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -16,14 +16,37 @@
   <img src="icon.svg" alt="" class="logo">
   <div class="titles">
     <h1>Congregação Cristã no Brasil</h1>
-    <p>Controle de Patrimônio <span id="cloudBadge" class="cloud-badge" title="Status do banco Supabase">📴 Local</span></p>
+    <p>
+      <span id="cloudBadge" class="cloud-badge" title="Status do banco Supabase">☁️ Supabase</span>
+      <button id="btnSessionBanner" class="session-pill" title="Trocar ou iniciar código de inventário">🏷️ <span id="sessionCodeLabel">INV-001</span></button>
+    </p>
   </div>
   <button id="btnUser" class="chip" title="Trocar usuário">👤 <span id="userName">—</span></button>
 </header>
 
 <main>
-  <!-- LEITOR -->
+  <!-- ABA 1: LEITOR / CONTAGEM -->
   <section id="tab-scan" class="tab active">
+    <div class="session-bar">
+      <div>
+        <small class="muted">Inventário ativo</small>
+        <strong id="scanSessionTitle">INV-2026-01</strong>
+      </div>
+      <div class="session-actions">
+        <button type="button" id="btnOpenSessionModal" class="chip">🔄 Novo / Trocar Código</button>
+        <button type="button" id="btnGoReconcile" class="chip gold">🏁 Encerrar / Comparar</button>
+      </div>
+    </div>
+
+    <div id="targetScanBanner" class="target-banner hidden">
+      <div>
+        <small>🎯 Procurando item fisicamente:</small>
+        <strong id="targetScanDesc">—</strong>
+        <span id="targetScanCode" class="code"></span>
+      </div>
+      <button type="button" id="btnCancelTargetScan" class="chip">✖ Cancelar</button>
+    </div>
+
     <div class="scanner">
       <video id="video" playsinline muted></video>
       <div class="frame"><span class="laser"></span></div>
@@ -35,81 +58,199 @@
     </div>
     <form id="manualForm" class="row manual">
       <input id="manualCode" type="text" inputmode="text" placeholder="Ou digite o código de barras" autocomplete="off">
-      <button class="btn">Buscar</button>
+      <button class="btn">Contar / Buscar</button>
     </form>
     <div id="result"></div>
   </section>
 
-  <!-- INVENTÁRIO -->
-  <section id="tab-list" class="tab">
-    <div class="stats">
-      <div class="stat"><b id="stTotal">0</b><span>Cadastrados</span></div>
-      <div class="stat ok"><b id="stOk">0</b><span>Conferidos</span></div>
-      <div class="stat warn"><b id="stPend">0</b><span>Pendentes</span></div>
+  <!-- ABA 2: CONCILIAÇÃO (COMPARAR CSV E ITENS NÃO ENCONTRADOS) -->
+  <section id="tab-reconcile" class="tab">
+    <div class="card">
+      <h2>🏁 Conciliação do Inventário (<span id="recSessionCode">INV</span>)</h2>
+      <p class="muted">Compare a contagem atual dos usuários com o arquivo CSV da base oficial para identificar os itens não encontrados.</p>
+      <div class="row">
+        <label class="btn primary file">📂 Carregar CSV para Comparar
+          <input id="compareCsvFile" type="file" accept=".csv,text/csv,text/plain" hidden>
+        </label>
+        <button type="button" id="btnCompareMaster" class="btn" title="Comparar com a base mestre atual">🔄 Atualizar</button>
+      </div>
+      <p id="compareMsg" class="muted"></p>
+    </div>
+
+    <div class="stats stats-4">
+      <div class="stat"><b id="stTotal">0</b><span>Base Esperada</span></div>
+      <div class="stat ok"><b id="stOk">0</b><span>Encontrados</span></div>
+      <div class="stat bad"><b id="stPend">0</b><span>Não Encontrados</span></div>
+      <div class="stat gold"><b id="stNew">0</b><span>Novos Criados</span></div>
     </div>
     <div class="bar"><div id="progress"></div></div>
+
+    <div class="card whatsapp-card">
+      <h2>📲 Relatório de Não Encontrados (WhatsApp)</h2>
+      <p class="muted">Gere o arquivo ou envie a lista de itens pendentes/não encontrados diretamente para o WhatsApp da equipe.</p>
+      <div class="row wrap-row">
+        <button type="button" id="btnShareWhatsapp" class="btn ok primary">📲 Enviar para WhatsApp</button>
+        <button type="button" id="btnDownloadMissing" class="btn">📄 Baixar Arquivo (.txt / .csv)</button>
+      </div>
+    </div>
+
     <div class="row">
-      <input id="search" type="search" placeholder="Buscar por nome, código ou local">
+      <input id="searchReconcile" type="search" placeholder="Filtrar por código, descrição ou local...">
     </div>
     <div class="filters">
-      <button class="chip sel" data-f="all">Todos</button>
-      <button class="chip" data-f="pend">Pendentes</button>
-      <button class="chip" data-f="ok">Conferidos</button>
+      <button class="chip sel" data-rf="pend">❌ Não Encontrados</button>
+      <button class="chip" data-rf="ok">✔ Encontrados</button>
+      <button class="chip" data-rf="all">Todos</button>
     </div>
-    <ul id="list" class="list"></ul>
+    <ul id="reconcileList" class="list"></ul>
   </section>
 
-  <!-- IMPORTAR / SUPABASE -->
+  <!-- ABA 3: DADOS MESTRE (GESTÃO DE PATRIMÔNIO) -->
+  <section id="tab-master" class="tab">
+    <div class="master-header">
+      <div>
+        <h2>🏛️ Gestão de Dados Mestre</h2>
+        <p class="muted">Cadastro permanente de bens da Congregação (<span id="masterCount">0</span> itens)</p>
+      </div>
+      <button type="button" id="btnNewMasterItem" class="btn primary small-btn">➕ Novo Bem</button>
+    </div>
+
+    <div class="row">
+      <input id="searchMaster" type="search" placeholder="Buscar no cadastro mestre (código, nome, local)...">
+    </div>
+    <div class="row filter-selects">
+      <select id="filterMasterCat">
+        <option value="">Todas as categorias</option>
+      </select>
+      <select id="filterMasterLoc">
+        <option value="">Todos os locais</option>
+      </select>
+    </div>
+    <ul id="masterList" class="list"></ul>
+  </section>
+
+  <!-- ABA 4: CONFIGURAÇÕES / SESSÃO / SUPABASE -->
   <section id="tab-data" class="tab">
     <div class="card">
+      <h2>🏷️ Sessão de Inventário Multi-usuário</h2>
+      <p class="muted">Defina o código do inventário para que vários usuários contem juntos em tempo real. Quando um usuário iniciar uma nova contagem, pode zerar apenas os vistos de conferência mantendo os Dados Mestre.</p>
+      <div class="row">
+        <button type="button" id="btnManageSession" class="btn primary">🏷️ Gerenciar Código do Inventário</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>📂 Importar / Atualizar Dados Mestre (CSV)</h2>
+      <p class="muted">Colunas reconhecidas: <code>codigo</code>, <code>descricao</code>, <code>categoria</code>, <code>local</code>, <code>observacao</code>. Separador <code>;</code> ou <code>,</code>.</p>
+      <label class="btn primary file">📂 Importar CSV na Base Mestre
+        <input id="csvFile" type="file" accept=".csv,text/csv,text/plain" hidden>
+      </label>
+      <label class="check"><input type="checkbox" id="keepState" checked> Manter conferências e fotos já feitas dos códigos existentes</label>
+      <p id="importMsg" class="muted"></p>
+    </div>
+
+    <div class="card">
+      <h2>⬇️ Exportar Relatório Completo (CSV)</h2>
+      <p class="muted">Exporta toda a base com código do inventário, situação (Conferido / Aceito Manualmente / Pendente), usuário e data/hora.</p>
+      <button id="btnExport" class="btn">⬇️ Exportar CSV Completo</button>
+    </div>
+
+    <div class="card">
       <h2>☁️ Banco de Dados (Supabase)</h2>
-      <p class="muted">Sincroniza automaticamente os itens cadastrados, fotos e conferências na nuvem (tabela <code>patrimonio_items</code>).</p>
+      <p class="muted">Base centralizada na nuvem para sincronização entre vários celulares.</p>
       <div class="form-stack">
         <label class="field-label">Project URL do Supabase
           <input id="sbUrl" type="text" placeholder="https://seu-projeto.supabase.co" autocomplete="off">
         </label>
-        <label class="field-label">Anon Public Key
-          <input id="sbKey" type="text" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..." autocomplete="off">
+        <label class="field-label">Anon / Publishable Key
+          <input id="sbKey" type="text" placeholder="sb_publishable_..." autocomplete="off">
         </label>
         <div class="row">
-          <button id="btnSaveSb" class="btn primary" type="button">💾 Conectar e Sincronizar</button>
+          <button id="btnSaveSb" class="btn primary" type="button">💾 Salvar e Sincronizar</button>
           <button id="btnSyncSb" class="btn" type="button" title="Sincronizar agora">🔄</button>
         </div>
         <p id="sbStatus" class="muted"></p>
       </div>
     </div>
 
-    <div class="card">
-      <h2>Importar base (CSV)</h2>
-      <p class="muted">Arquivo gerado pelo sistema desktop. Colunas reconhecidas: <code>codigo</code>, <code>descricao</code> (ou nome), <code>categoria</code>, <code>local</code>, <code>observacao</code>. Outras colunas também são exibidas. Separador <code>;</code> ou <code>,</code>.</p>
-      <label class="btn primary file">📂 Selecionar CSV
-        <input id="csvFile" type="file" accept=".csv,text/csv,text/plain" hidden>
-      </label>
-      <label class="check"><input type="checkbox" id="keepState" checked> Manter conferências e fotos já feitas dos códigos existentes</label>
-      <p id="importMsg" class="muted"></p>
-    </div>
-    <div class="card">
-      <h2>Exportar inventário</h2>
-      <p class="muted">CSV com a situação de cada item, data/hora e usuário da conferência.</p>
-      <button id="btnExport" class="btn">⬇️ Exportar CSV</button>
-    </div>
     <div class="card danger">
       <h2>Limpar dados</h2>
-      <button id="btnReset" class="btn danger">Apagar tudo</button>
+      <div class="row wrap-row">
+        <button id="btnResetCounts" class="btn">🔄 Zerar Apenas Contagens</button>
+        <button id="btnReset" class="btn danger">🗑️ Apagar Tudo (Base + Contagens)</button>
+      </div>
     </div>
   </section>
 </main>
 
-<!-- MODAL / TELA DE CADASTRO DE NOVO ITEM -->
-<div id="createModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="createTitle">
+<!-- POP-UP CENTRALIZADO 1: PERGUNTA SE DESEJA CRIAR ITEM INEXISTENTE -->
+<div id="askCreateModal" class="modal center-modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box popup-card">
+    <div class="popup-icon">❓</div>
+    <h2>Código não cadastrado</h2>
+    <div id="askCreateCode" class="code popup-code"></div>
+    <p class="ask-title">Este código não existe na base. Deseja criar este item do patrimônio agora?</p>
+    <div class="row">
+      <button type="button" id="btnPopupAskNo" class="btn">Não</button>
+      <button type="button" id="btnPopupAskYes" class="btn ok primary">✔ Sim, criar agora</button>
+    </div>
+  </div>
+</div>
+
+<!-- POP-UP CENTRALIZADO 2: AVISO DE ITEM JÁ CONTADO POR OUTRO USUÁRIO -->
+<div id="alreadyCountedModal" class="modal center-modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box popup-card warn-popup">
+    <div class="popup-icon">⚠️</div>
+    <h2 id="alreadyCountedTitle">Item já contado!</h2>
+    <div id="alreadyCountedDesc" class="popup-item-title"></div>
+    <div id="alreadyCountedCode" class="code popup-code"></div>
+    <div id="alreadyCountedInfo" class="popup-info-box"></div>
+    <div class="row">
+      <button type="button" id="btnCloseAlreadyModal" class="btn primary">Entendi, continuar lendo</button>
+    </div>
+  </div>
+</div>
+
+<!-- POP-UP CENTRALIZADO 3: INICIAR / ENTRAR EM CÓDIGO DE INVENTÁRIO -->
+<div id="sessionModal" class="modal center-modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box popup-card">
+    <div class="modal-head">
+      <h2>🏷️ Código do Inventário</h2>
+      <button type="button" id="btnCloseSessionModal" class="chip">✖</button>
+    </div>
+    <p class="muted" style="text-align:left">Informe o código do inventário para que todos os usuários contem na mesma sessão, ou gere um novo código para iniciar uma nova contagem.</p>
+    <form id="sessionForm" class="form-stack">
+      <label class="field-label">Seu Nome (Responsável / Contador) *
+        <input id="sessionUserInput" type="text" required placeholder="Ex.: Fernando">
+      </label>
+      <label class="field-label">Código do Inventário *
+        <div class="row" style="margin-top:0">
+          <input id="sessionCodeInput" type="text" required placeholder="Ex.: INV-2026-01">
+          <button type="button" id="btnGenerateSessionCode" class="btn" title="Gerar novo código automático">⚡ Gerar</button>
+        </div>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="sessionResetChecks">
+        Iniciar nova contagem do zero (desmarcar conferências anteriores)
+      </label>
+      <div class="row">
+        <button type="button" id="btnCancelSession" class="btn">Cancelar</button>
+        <button type="submit" class="btn ok primary">✔ Confirmar Sessão</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- MODAL DE CADASTRO / EDIÇÃO DE ITEM (DADOS MESTRE + FOTO OPCIONAL) -->
+<div id="createModal" class="modal center-modal hidden" role="dialog" aria-modal="true" aria-labelledby="createTitle">
   <div class="modal-box">
     <div class="modal-head">
       <h2 id="createTitle">Cadastrar Novo Item</h2>
       <button type="button" id="btnCloseCreate" class="chip" aria-label="Fechar">✖</button>
     </div>
     <form id="createForm" class="form-stack">
-      <label class="field-label">Código de barras
-        <input id="newCode" type="text" readonly class="readonly-input">
+      <label class="field-label">Código de barras / Patrimônio *
+        <input id="newCode" type="text" required class="readonly-input">
       </label>
 
       <div class="field-label">Foto do item <span class="muted">(opcional)</span>
@@ -124,37 +265,51 @@
         <input id="newDesc" type="text" required placeholder="Ex.: Cadeira estofada azul" autocomplete="off">
       </label>
 
-      <label class="field-label">Categoria *
-        <input id="newCat" type="text" list="catList" required placeholder="Ex.: Móveis, Som, Informática" autocomplete="off">
-        <datalist id="catList"></datalist>
-      </label>
+      <div class="grid-2">
+        <label class="field-label">Categoria *
+          <input id="newCat" type="text" list="catList" required placeholder="Ex.: Móveis, Som" autocomplete="off">
+          <datalist id="catList"></datalist>
+        </label>
 
-      <label class="field-label">Local / Ambiente *
-        <input id="newLoc" type="text" list="locList" required placeholder="Ex.: Salão principal, Secretaria" autocomplete="off">
-        <datalist id="locList"></datalist>
+        <label class="field-label">Local / Ambiente *
+          <input id="newLoc" type="text" list="locList" required placeholder="Ex.: Salão principal" autocomplete="off">
+          <datalist id="locList"></datalist>
+        </label>
+      </div>
+
+      <label class="field-label">Estado de Conservação
+        <select id="newState">
+          <option value="Bom">Bom</option>
+          <option value="Novo">Novo</option>
+          <option value="Regular">Regular</option>
+          <option value="Manutenção">Em Manutenção</option>
+          <option value="Inservível">Inservível / Baixa</option>
+        </select>
       </label>
 
       <label class="field-label">Observação <span class="muted">(opcional)</span>
-        <textarea id="newObs" rows="2" placeholder="Detalhes adicionais, marca, estado de conservação..."></textarea>
+        <textarea id="newObs" rows="2" placeholder="Marca, modelo, número de série, detalhes..."></textarea>
       </label>
 
-      <label class="check">
+      <label class="check" id="newCheckedWrap">
         <input type="checkbox" id="newChecked" checked>
-        Já marcar este item como conferido no inventário
+        Já marcar este item como contado no inventário atual
       </label>
 
       <div class="row">
+        <button type="button" id="btnDeleteMasterItem" class="btn danger hidden">🗑️ Excluir</button>
         <button type="button" id="btnCancelCreate" class="btn">Cancelar</button>
-        <button type="submit" id="btnSubmitCreate" class="btn ok primary">💾 Salvar Item</button>
+        <button type="submit" id="btnSubmitCreate" class="btn ok primary">💾 Salvar no Supabase</button>
       </div>
     </form>
   </div>
 </div>
 
 <nav class="tabs">
-  <button data-tab="scan" class="active"><i>📷</i>Leitor</button>
-  <button data-tab="list"><i>📋</i>Inventário</button>
-  <button data-tab="data"><i>⚙️</i>Dados</button>
+  <button data-tab="scan" class="active"><i>📷</i>Contar</button>
+  <button data-tab="reconcile"><i>⚖️</i>Conciliar</button>
+  <button data-tab="master"><i>🏛️</i>Dados Mestre</button>
+  <button data-tab="data"><i>⚙️</i>Ajustes</button>
 </nav>
 
 <input id="photoInput" type="file" accept="image/*" capture="environment" hidden>
