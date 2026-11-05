@@ -1,9 +1,9 @@
 'use strict';
 
 /* ====== Versão do Aplicativo e Configuração Padrão do Supabase ====== */
-const APP_VERSION = 'v1.14.0';
-const APP_BUILD_DATE = '05/11/2026 00:54';
-const APP_BUILD_NOTES = 'Proteção com senha mestre (ccb123@) para Apagar Base Completa';
+const APP_VERSION = 'v1.15.0';
+const APP_BUILD_DATE = '05/11/2026 00:57';
+const APP_BUILD_NOTES = 'Logo oficial CCB, ícone/nome do app PatrimonioCCB e cabeçalho CCB Vila Itatiaia';
 const MASTER_RESET_PASSWORD = 'ccb123@';
 const DEFAULT_SUPABASE_URL = 'https://vjdcsautoooubtjdhswk.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_fmDYGqwIa1IY_B-iNZ4XAQ_QUP1BNmb';

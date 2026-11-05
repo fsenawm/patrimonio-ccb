@@ -1,12 +1,15 @@
 {
-  "name": "Patrimônio – Congregação Cristã no Brasil",
-  "short_name": "Patrimônio CCB",
-  "description": "Inventário de patrimônio por código de barras",
+  "name": "PatrimonioCCB – CCB Vila Itatiaia",
+  "short_name": "PatrimonioCCB",
+  "description": "Inventário de patrimônio – Congregação Cristã no Brasil (Vila Itatiaia)",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0b1b30",
   "theme_color": "#0f2a4a",
-  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "logo-ccb.jpg", "sizes": "512x512", "type": "image/jpeg", "purpose": "any" }
+  ]
 }
