@@ -259,9 +259,9 @@
 
       <div id="newInvPassGroup" class="form-stack" style="margin-top:0">
         <label class="field-label">🔒 Senha de Abertura do Inventário *
-          <input id="sessionPassInput" type="password" placeholder="Defina uma senha para encerrar/eliminar" autocomplete="new-password">
+          <input id="sessionPassInput" type="password" placeholder="Defina uma senha para encerrar/reabrir/eliminar" autocomplete="new-password">
         </label>
-        <small class="muted" style="text-align:left;margin-top:-6px">Esta senha será exigida para encerrar ou eliminar este inventário.</small>
+        <small class="muted" style="text-align:left;margin-top:-6px">Esta senha será exigida para encerrar, reabrir ou eliminar este inventário.</small>
         <label class="check">
           <input type="checkbox" id="sessionResetChecks" checked>
           Iniciar contagem limpa para este novo inventário (mantém Dados Mestre e salva anterior no histórico)
@@ -318,6 +318,25 @@
       <div class="row">
         <button type="button" id="btnCancelDeleteInv" class="btn">Cancelar</button>
         <button type="submit" class="btn danger primary" style="background:var(--bad);color:#fff;border:0">🗑️ Confirmar Eliminação</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- POP-UP CENTRALIZADO 6: REABRIR INVENTÁRIO (EXIGE SENHA DE ABERTURA) -->
+<div id="reopenInvModal" class="modal center-modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box popup-card">
+    <div class="popup-icon">🔓</div>
+    <h2>Reabrir Inventário</h2>
+    <div id="reopenInvCodeLabel" class="code popup-code"></div>
+    <p class="muted">Informe a <b>Senha de Abertura</b> deste inventário para reabri-lo e permitir novas leituras e conferências:</p>
+    <form id="reopenInvForm" class="form-stack">
+      <label class="field-label">🔒 Senha de Abertura do Inventário *
+        <input id="reopenInvPassInput" type="password" required placeholder="Digite a senha definida na abertura" autocomplete="off">
+      </label>
+      <div class="row">
+        <button type="button" id="btnCancelReopenInv" class="btn">Cancelar</button>
+        <button type="submit" class="btn ok primary">🔓 Confirmar e Reabrir</button>
       </div>
     </form>
   </div>

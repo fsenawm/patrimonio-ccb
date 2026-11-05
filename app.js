@@ -633,11 +633,48 @@ $('#closeInvForm')?.addEventListener('submit', async e => {
   }
 });
 
-/* ====== Reabrir Contagem do Histórico ====== */
-async function reopenInventorySession(sessionCode) {
+/* ====== Modal 6: Reabrir Contagem do Histórico (Exige Senha de Abertura) ====== */
+let pendingReopenSessionCode = null;
+
+function openReopenInvModal(sessionCode) {
+  stopScan();
+  const target = (sessionCode || getSessionCode() || '').trim();
+  if (!target) return toast('Nenhum inventário selecionado para reabrir.');
+  pendingReopenSessionCode = target;
+  $('#reopenInvCodeLabel').textContent = pendingReopenSessionCode;
+  $('#reopenInvPassInput').value = '';
+  $('#reopenInvModal').classList.remove('hidden');
+  setTimeout(() => $('#reopenInvPassInput').focus(), 80);
+}
+
+function closeReopenInvModal() {
+  $('#reopenInvModal').classList.add('hidden');
+  pendingReopenSessionCode = null;
+}
+
+$('#btnCancelReopenInv')?.addEventListener('click', closeReopenInvModal);
+
+$('#reopenInvForm')?.addEventListener('submit', async e => {
+  e.preventDefault();
+  const targetCode = (pendingReopenSessionCode || getSessionCode() || '').trim();
+  if (!targetCode) return closeReopenInvModal();
+
+  const typedPass = ($('#reopenInvPassInput').value || '').trim();
+  const savedPass = await getSessionPassword(targetCode);
+
+  if (savedPass && typedPass !== savedPass) {
+    navigator.vibrate?.([200, 100, 200]);
+    return toast('❌ Senha incorreta! Só é permitido reabrir com a senha de abertura.');
+  }
+
+  closeReopenInvModal();
+  await executeReopenInventorySession(targetCode, savedPass || typedPass);
+});
+
+async function executeReopenInventorySession(sessionCode, validPass) {
   const histRow = await DB.get(HIST_PREFIX + sessionCode);
   const snap = histRow?.extra?.snapshot || null;
-  const pass = histRow?.extra?.password || '';
+  const pass = validPass || histRow?.extra?.password || '';
   const user = getUser() || 'Contador';
 
   setSessionCode(sessionCode);
@@ -660,8 +697,8 @@ async function reopenInventorySession(sessionCode) {
   switchTab('scan');
 }
 
-$('#btnReopenActiveInv')?.addEventListener('click', () => reopenInventorySession(getSessionCode()));
-$('#btnBannerReopen')?.addEventListener('click', () => reopenInventorySession(getSessionCode()));
+$('#btnReopenActiveInv')?.addEventListener('click', () => openReopenInvModal(getSessionCode()));
+$('#btnBannerReopen')?.addEventListener('click', () => openReopenInvModal(getSessionCode()));
 
 /* ====== Modal 5: ELIMINAR CONTAGEM TODA (Exige Senha de Abertura) ====== */
 function openDeleteInvModal(sessionCode) {
@@ -796,7 +833,7 @@ function renderHistory() {
 $('#historyList')?.addEventListener('click', e => {
   const reopenBtn = e.target.closest('[data-hist-reopen]');
   if (reopenBtn) {
-    reopenInventorySession(reopenBtn.dataset.histReopen);
+    openReopenInvModal(reopenBtn.dataset.histReopen);
     return;
   }
   const delBtn = e.target.closest('[data-hist-delete]');
@@ -1013,11 +1050,9 @@ async function handleScanOrSearch(rawCode) {
 
   if (isCurrentSessionClosed()) {
     stopScan();
-    if (confirm(`O inventário ${getSessionCode()} está ENCERRADO. Deseja reabri-lo agora para continuar contando?`)) {
-      await reopenInventorySession(getSessionCode());
-    } else {
-      return;
-    }
+    toast('🔒 Inventário encerrado! Informe a senha de abertura para reabri-lo.');
+    openReopenInvModal(getSessionCode());
+    return;
   }
 
   let it = findLocal(code);
@@ -1468,8 +1503,9 @@ $('#btnCancelTargetScan')?.addEventListener('click', clearTargetSearch);
 
 async function acceptMissingItemAsFound(code) {
   if (isCurrentSessionClosed()) {
-    if (!confirm(`O inventário ${getSessionCode()} está encerrado. Deseja reabri-lo para aceitar este item?`)) return;
-    await reopenInventorySession(getSessionCode());
+    toast('🔒 Inventário encerrado! Informe a senha de abertura para reabri-lo primeiro.');
+    openReopenInvModal(getSessionCode());
+    return;
   }
   const it = await DB.get(code);
   if (!it) return;
