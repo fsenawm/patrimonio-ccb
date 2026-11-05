@@ -1532,7 +1532,7 @@ $('#newPhotoInput').onchange = async e => {
   const f = e.target.files[0];
   e.target.value = '';
   if (!f) return;
-  newItemPhotoData = await shrink(f, 900);
+  newItemPhotoData = await shrink(f, 300, 0.5);
   $('#newPhotoPreview').src = newItemPhotoData;
   $('#newPhotoPreview').classList.remove('hidden');
   $('#newPhotoPlaceholder').classList.add('hidden');
@@ -1656,7 +1656,7 @@ async function toggleCheck(code) {
 $('#photoInput').onchange = async e => {
   const f = e.target.files[0]; e.target.value = '';
   if (!f || !currentCode) return;
-  const url = await shrink(f, 900);
+  const url = await shrink(f, 300, 0.5);
   const it = await DB.get(currentCode);
   const user = getUser() || 'Contador';
   const dev = getDevice();
@@ -1671,17 +1671,28 @@ $('#photoInput').onchange = async e => {
   await Cloud.upsert([it]);
   await refresh();
   renderItemCard(it);
-  toast('Foto salva no Supabase ✔');
+  toast('Foto leve salva no Supabase ✔');
 };
 
-function shrink(file, max) {
+function shrink(file, max = 300, quality = 0.5) {
   return new Promise(res => {
     const img = new Image();
     img.onload = () => {
       const s = Math.min(1, max / Math.max(img.width, img.height));
-      const c = document.createElement('canvas'); c.width = img.width * s; c.height = img.height * s;
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      URL.revokeObjectURL(img.src); res(c.toDataURL('image/jpeg', .8));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.width * s));
+      c.height = Math.max(1, Math.round(img.height * s));
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(img.src);
+      let dataUrl = c.toDataURL('image/jpeg', quality);
+      // Caso a imagem ainda passe de ~25 KB em base64, reduz mais um pouco para não pesar no banco
+      if (dataUrl.length > 28000) {
+        dataUrl = c.toDataURL('image/jpeg', 0.35);
+      }
+      res(dataUrl);
     };
     img.src = URL.createObjectURL(file);
   });
