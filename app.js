@@ -51,26 +51,27 @@ let wasScanningBeforePopup = false;
 let targetSearchCode = null;
 let sessionModalMode = 'new'; // 'new' | 'join'
 let pendingDeleteSessionCode = null;
+let syncBusy = false;
 
 /* ====== Sessão de Inventário, Senha & Histórico ====== */
 function getDefaultSessionCode() {
   const d = new Date();
   const ym = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-  return `INV-${ym}-01`;
+  const rand = String(Math.floor(10 + Math.random() * 90));
+  return `INV-${ym}-${rand}`;
 }
 
 function getSessionCode() {
-  let s = localStorage.getItem('inv_session_code');
-  if (!s) {
-    s = getDefaultSessionCode();
-    localStorage.setItem('inv_session_code', s);
-  }
-  return s;
+  return (localStorage.getItem('inv_session_code') || '').trim();
 }
 
 function setSessionCode(code) {
-  code = (code || '').trim().toUpperCase() || getDefaultSessionCode();
-  localStorage.setItem('inv_session_code', code);
+  code = (code || '').trim().toUpperCase();
+  if (code) {
+    localStorage.setItem('inv_session_code', code);
+  } else {
+    localStorage.removeItem('inv_session_code');
+  }
   updateSessionUI();
   return code;
 }
@@ -98,26 +99,35 @@ function isCurrentSessionClosed() {
 
 function updateSessionUI() {
   const s = getSessionCode();
+  const hasSession = Boolean(s);
   const u = getUser() || 'Identificar';
-  const closed = isCurrentSessionClosed();
+  const closed = hasSession && isCurrentSessionClosed();
 
-  if ($('#sessionCodeLabel')) $('#sessionCodeLabel').textContent = s;
-  if ($('#scanSessionTitle')) $('#scanSessionTitle').textContent = s;
-  if ($('#recSessionCode')) $('#recSessionCode').textContent = s;
+  if ($('#sessionCodeLabel')) $('#sessionCodeLabel').textContent = s || 'Sem inventário';
+  if ($('#scanSessionTitle')) $('#scanSessionTitle').textContent = s || 'Nenhum inventário ativo';
+  if ($('#recSessionCode')) $('#recSessionCode').textContent = s || '—';
   if ($('#userName')) $('#userName').textContent = u;
 
   const badge = $('#sessionStatusBadge');
   if (badge) {
-    badge.textContent = closed ? 'ENCERRADO' : 'ABERTO';
-    badge.className = `badge ${closed ? 'bad' : 'ok'}`;
+    if (!hasSession) {
+      badge.textContent = 'INATIVO';
+      badge.className = 'badge warn';
+    } else {
+      badge.textContent = closed ? 'ENCERRADO' : 'ABERTO';
+      badge.className = `badge ${closed ? 'bad' : 'ok'}`;
+    }
   }
   if ($('#scanSessionStatusText')) {
-    $('#scanSessionStatusText').textContent = closed ? 'Encerrado no histórico' : 'Em contagem';
+    $('#scanSessionStatusText').textContent = !hasSession
+      ? 'Abra ou entre em um inventário'
+      : (closed ? 'Encerrado no histórico' : 'Em contagem');
   }
 
   $('#closedSessionBanner')?.classList.toggle('hidden', !closed);
-  $('#btnOpenCloseInvModal')?.classList.toggle('hidden', closed);
-  $('#btnReopenActiveInv')?.classList.toggle('hidden', !closed);
+  $('#btnOpenCloseInvModal')?.classList.toggle('hidden', !hasSession || closed);
+  $('#btnReopenActiveInv')?.classList.toggle('hidden', !hasSession || !closed);
+  $('#btnOpenDeleteInvModal')?.classList.toggle('hidden', !hasSession);
 }
 
 function buildSnapshotFromItems(itemList) {
@@ -136,6 +146,7 @@ function buildSnapshotFromItems(itemList) {
 }
 
 async function saveSessionToHistory({ sessionCode, status, password, startedBy, startedAt, closedBy, closedAt }) {
+  if (!sessionCode) return null;
   const rowCode = HIST_PREFIX + sessionCode;
   const existingRow = await DB.get(rowCode);
   const prevExtra = existingRow?.extra || {};
@@ -295,6 +306,7 @@ const Cloud = {
     if (this.isReady()) await this.upsert([metaRow]);
   },
   async syncAll(pushLocalFirst = false) {
+    if (syncBusy && !pushLocalFirst) return false;
     if (!this.isReady()) {
       this.updateBadge(false, 'Configure a URL e a Anon Key do Supabase.');
       return false;
@@ -319,10 +331,24 @@ const Cloud = {
         }
       }
       const allLocal = await DB.all();
-      const missingOnCloud = allLocal.filter(i => !remoteCodes.has(i.code));
-      if (missingOnCloud.length) await this.upsert(missingOnCloud);
+      if (pushLocalFirst) {
+        const missingOnCloud = allLocal.filter(i => !remoteCodes.has(i.code));
+        if (missingOnCloud.length) await this.upsert(missingOnCloud);
+      } else {
+        // Remove localmente históricos/sessões que foram eliminados na nuvem
+        for (const locIt of allLocal) {
+          if (isSystemRow(locIt.code) && !remoteCodes.has(locIt.code)) {
+            await DB.del(locIt.code);
+            if (locIt.code === HIST_PREFIX + getSessionCode()) {
+              setSessionCode('');
+              localStorage.removeItem('inv_session_manual');
+            }
+          }
+        }
+      }
 
-      const masterCount = allLocal.filter(i => !isSystemRow(i.code)).length;
+      const finalLocal = await DB.all();
+      const masterCount = finalLocal.filter(i => !isSystemRow(i.code)).length;
       this.updateBadge(true, `✔ Conectado ao Supabase (${masterCount} bens na base).`);
       await refresh();
       return true;
@@ -407,15 +433,14 @@ $('#btnModeJoinInv')?.addEventListener('click', () => setSessionModalMode('join'
 function openSessionModal(forceUser = false, defaultMode = 'new') {
   stopScan();
   $('#sessionUserInput').value = getUser() || '';
+  const curCode = getSessionCode();
   if (defaultMode === 'new') {
-    const d = new Date();
-    const rand = String(Math.floor(10 + Math.random() * 90));
-    const suggested = histories.some(h => h.sessionCode === getSessionCode())
-      ? `INV-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${rand}`
-      : getSessionCode();
+    const suggested = (!curCode || histories.some(h => h.sessionCode === curCode))
+      ? getDefaultSessionCode()
+      : curCode;
     $('#sessionCodeInput').value = suggested;
   } else {
-    $('#sessionCodeInput').value = getSessionCode();
+    $('#sessionCodeInput').value = curCode || (histories[0]?.sessionCode || '');
   }
   $('#sessionPassInput').value = '';
   $('#sessionResetChecks').checked = true;
@@ -641,7 +666,9 @@ $('#btnBannerReopen')?.addEventListener('click', () => reopenInventorySession(ge
 /* ====== Modal 5: ELIMINAR CONTAGEM TODA (Exige Senha de Abertura) ====== */
 function openDeleteInvModal(sessionCode) {
   stopScan();
-  pendingDeleteSessionCode = sessionCode || getSessionCode();
+  const target = (sessionCode || getSessionCode() || '').trim();
+  if (!target) return toast('Nenhum inventário ativo para eliminar.');
+  pendingDeleteSessionCode = target;
   $('#deleteInvCodeLabel').textContent = pendingDeleteSessionCode;
   $('#deleteInvPassInput').value = '';
   $('#deleteInvModal').classList.remove('hidden');
@@ -659,7 +686,9 @@ $('#btnCancelDeleteInv')?.addEventListener('click', closeDeleteInvModal);
 
 $('#deleteInvForm')?.addEventListener('submit', async e => {
   e.preventDefault();
-  const targetCode = pendingDeleteSessionCode || getSessionCode();
+  const targetCode = (pendingDeleteSessionCode || getSessionCode() || '').trim();
+  if (!targetCode) return closeDeleteInvModal();
+
   const typedPass = ($('#deleteInvPassInput').value || '').trim();
   const savedPass = await getSessionPassword(targetCode);
 
@@ -668,30 +697,61 @@ $('#deleteInvForm')?.addEventListener('submit', async e => {
     return toast('❌ Senha incorreta! Só é permitido eliminar com a senha de abertura.');
   }
 
-  // Se for a sessão ativa, limpa todas as contagens dos itens mantendo os Dados Mestre
-  if (targetCode === getSessionCode()) {
-    await clearCurrentItemChecksOnly();
+  syncBusy = true;
+  try {
+    const activeBefore = getSessionCode();
+
+    // 1. Limpa todas as contagens dos itens associadas a esse inventário
+    const all = (await DB.all()).filter(i => !isSystemRow(i.code));
+    const updated = [];
+    for (const it of all) {
+      if (targetCode === activeBefore || it.extra?._inv_session === targetCode || it.checked) {
+        it.checked = false;
+        it.at = null;
+        it.by = null;
+        if (it.extra) {
+          delete it.extra._inv_session;
+          delete it.extra._count_method;
+        }
+        await DB.put(it);
+        updated.push(it);
+      }
+    }
+    if (updated.length) await Cloud.upsert(updated);
+
+    // 2. Remove definitivamente o registro de histórico dessa contagem do banco local e do Supabase
+    const histKey = HIST_PREFIX + targetCode;
+    await DB.del(histKey);
+    await Cloud.deleteOne(histKey);
+
+    // 3. Remove o META se apontava para esse inventário e limpa o código ativo
+    const metaRow = await DB.get(META_ROW_CODE);
+    if (targetCode === activeBefore || metaRow?.extra?.sessionCode === targetCode) {
+      await DB.del(META_ROW_CODE);
+      await Cloud.deleteOne(META_ROW_CODE);
+      localStorage.removeItem('inv_session_code');
+      localStorage.removeItem('inv_session_manual');
+    }
+
+    await refresh();
+
+    if (targetCode === activeBefore) {
+      if (histories.length > 0) {
+        setSessionCode(histories[0].sessionCode);
+      } else {
+        setSessionCode('');
+      }
+      $('#result').innerHTML = '';
+    }
+
+    updateSessionUI();
+    renderHistory();
+    renderReconcile();
+    closeDeleteInvModal();
+    toast(`🗑️ Inventário ${targetCode} eliminado completamente!`);
+  } finally {
+    syncBusy = false;
   }
-
-  // Remove o registro de histórico dessa contagem
-  const histKey = HIST_PREFIX + targetCode;
-  await DB.del(histKey);
-  await Cloud.deleteOne(histKey);
-
-  // Se era a sessão ativa no META, atualiza status sem contagens
-  if (targetCode === getSessionCode()) {
-    await saveSessionToHistory({
-      sessionCode: targetCode,
-      status: 'ABERTO',
-      password: savedPass || typedPass,
-      closedBy: null,
-      closedAt: null,
-    });
-  }
-
-  await refresh();
-  closeDeleteInvModal();
-  toast(`🗑️ Contagem do inventário ${targetCode} eliminada com sucesso!`);
 });
 
 /* ====== Renderização do Histórico de Inventários ====== */
@@ -946,7 +1006,7 @@ async function handleScanOrSearch(rawCode) {
   const code = String(rawCode || '').trim();
   if (!code) return;
 
-  if (!getUser()) {
+  if (!getUser() || !getSessionCode()) {
     openSessionModal(true, 'new');
     return;
   }
