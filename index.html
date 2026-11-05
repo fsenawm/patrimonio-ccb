@@ -205,7 +205,7 @@
     <div class="card">
       <div class="row between">
         <h2>ℹ️ Versão do Aplicativo</h2>
-        <span id="appVersionBadge" class="badge gold">v1.11.0</span>
+        <span id="appVersionBadge" class="badge gold">v1.12.0</span>
       </div>
       <p id="appVersionInfo" class="muted">Carregando informações da versão...</p>
       <button id="btnForceUpdate" class="btn" type="button" style="width:100%">🔄 Forçar Atualização da Versão</button>
@@ -256,15 +256,12 @@
         <input id="sessionUserInput" type="text" required placeholder="Ex.: Fernando">
       </label>
 
-      <label class="field-label">📱 Aparelho Identificado Automaticamente
-        <input id="sessionDeviceInput" type="text" readonly class="readonly-input" placeholder="Identificando aparelho...">
+      <label class="field-label">📱 Dispositivo Utilizado (Não editável)
+        <input id="sessionDeviceInput" type="text" readonly disabled class="readonly-input" tabindex="-1">
       </label>
 
-      <label class="field-label">🏷️ Código do Inventário *
-        <div class="row" style="margin-top:0">
-          <input id="sessionCodeInput" type="text" required placeholder="Ex.: INV-2026-01">
-          <button type="button" id="btnGenerateSessionCode" class="btn" title="Gerar novo código automático">⚡ Gerar</button>
-        </div>
+      <label class="field-label">🏷️ Código do Inventário (INV + Data + Hora · Não editável)
+        <input id="sessionCodeInput" type="text" readonly disabled class="readonly-input" tabindex="-1">
       </label>
 
       <div id="newInvPassGroup" class="form-stack" style="margin-top:0">

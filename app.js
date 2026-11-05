@@ -1,9 +1,9 @@
 'use strict';
 
 /* ====== Versão do Aplicativo e Configuração Padrão do Supabase ====== */
-const APP_VERSION = 'v1.11.0';
-const APP_BUILD_DATE = '05/11/2026 00:43';
-const APP_BUILD_NOTES = 'Identificação automática do nome/modelo real do aparelho + fotos leves';
+const APP_VERSION = 'v1.12.0';
+const APP_BUILD_DATE = '05/11/2026 00:45';
+const APP_BUILD_NOTES = 'Dispositivo e Código do Inventário (INV+Data+Hora) automáticos e bloqueados para edição';
 const DEFAULT_SUPABASE_URL = 'https://vjdcsautoooubtjdhswk.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_fmDYGqwIa1IY_B-iNZ4XAQ_QUP1BNmb';
 const META_ROW_CODE = '__INV_META__';
@@ -240,9 +240,9 @@ function setDevice(devName) {
 /* ====== Sessão de Inventário Única, Usuário & Histórico ====== */
 function getDefaultSessionCode() {
   const d = new Date();
-  const ym = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-  const rand = String(Math.floor(10 + Math.random() * 90));
-  return `INV-${ym}-${rand}`;
+  const datePart = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  const timePart = `${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}${String(d.getSeconds()).padStart(2, '0')}`;
+  return `INV-${datePart}-${timePart}`;
 }
 
 function findGlobalOpenInventory() {
@@ -644,7 +644,13 @@ async function openSessionModal(forceUser = false) {
   const codeInput = $('#sessionCodeInput');
   const notice = $('#singleOpenNotice');
   const passGroup = $('#newInvPassGroup');
-  const genBtn = $('#btnGenerateSessionCode');
+
+  // Garante que tanto Dispositivo quanto Código do Inventário fiquem sempre bloqueados para edição
+  $('#sessionDeviceInput').setAttribute('readonly', 'readonly');
+  $('#sessionDeviceInput').setAttribute('disabled', 'disabled');
+  codeInput.setAttribute('readonly', 'readonly');
+  codeInput.setAttribute('disabled', 'disabled');
+  codeInput.classList.add('readonly-input');
 
   if (openInv) {
     // JÁ EXISTE UM INVENTÁRIO ABERTO: Todos os usuários trabalham obrigatoriamente nele!
@@ -654,23 +660,17 @@ async function openSessionModal(forceUser = false) {
       <div><b>🔒 Inventário Único Ativo:</b> <code>${esc(openInv.sessionCode)}</code></div>
       <div><b>Aberto por:</b> ${esc(openInv.startedBy || '—')} (${esc(openInv.startedDevice || '—')})</div>
       <div><b>Data/Hora:</b> ${openInv.startedAt ? new Date(openInv.startedAt).toLocaleString('pt-BR') : '—'}</div>
-      <div class="muted" style="margin-top:4px">Não é permitido abrir outro inventário enquanto este estiver aberto. Confirme seu nome e dispositivo para contar neste inventário:</div>
+      <div class="muted" style="margin-top:4px">Não é permitido abrir outro inventário enquanto este estiver aberto. Confirme seu nome para contar neste inventário:</div>
     `;
     codeInput.value = openInv.sessionCode;
-    codeInput.setAttribute('readonly', 'readonly');
-    codeInput.classList.add('readonly-input');
-    genBtn.classList.add('hidden');
     passGroup.classList.add('hidden');
     $('#sessionPassInput').removeAttribute('required');
     $('#btnSubmitSession').textContent = '👥 Entrar e Contar neste Inventário';
   } else {
-    // NENHUM INVENTÁRIO ABERTO: Permite abrir um novo definindo código e senha
+    // NENHUM INVENTÁRIO ABERTO: Gera código INV+Data+Hora automático e exige senha
     $('#sessionModalTitle').textContent = '➕ Abrir Novo Inventário';
     notice.classList.add('hidden');
     codeInput.value = getDefaultSessionCode();
-    codeInput.removeAttribute('readonly');
-    codeInput.classList.remove('readonly-input');
-    genBtn.classList.remove('hidden');
     passGroup.classList.remove('hidden');
     $('#sessionPassInput').setAttribute('required', 'required');
     $('#btnSubmitSession').textContent = '✔ Abrir Inventário com Senha';
@@ -690,16 +690,6 @@ function closeSessionModal() {
   $('#sessionModal').classList.add('hidden');
 }
 
-$('#btnGenerateSessionCode')?.addEventListener('click', () => {
-  if (findGlobalOpenInventory()) {
-    return toast('⚠️ Já existe um inventário aberto! Encerre-o antes de gerar outro.');
-  }
-  const d = new Date();
-  const rand = String(Math.floor(100 + Math.random() * 900));
-  const code = `INV-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${rand}`;
-  $('#sessionCodeInput').value = code;
-});
-
 $('#btnSessionBanner')?.addEventListener('click', () => openSessionModal(false));
 $('#btnOpenSessionModal')?.addEventListener('click', () => openSessionModal(false));
 $('#btnManageSession')?.addEventListener('click', () => openSessionModal(false));
@@ -717,7 +707,8 @@ $('#btnCancelSession')?.addEventListener('click', closeSessionModal);
 $('#sessionForm')?.addEventListener('submit', async e => {
   e.preventDefault();
   const u = setUser($('#sessionUserInput').value);
-  const dev = setDevice($('#sessionDeviceInput').value);
+  await resolveExactDeviceName();
+  const dev = setDevice(getDevice());
 
   // Sincroniza antes de confirmar para garantir que ninguém abriu outro inventário no mesmo instante
   if (Cloud.isReady()) await Cloud.syncAll(false);
@@ -732,11 +723,11 @@ $('#sessionForm')?.addEventListener('submit', async e => {
     return;
   }
 
-  // Abrindo novo inventário (quando não há nenhum aberto)
-  const c = ($('#sessionCodeInput').value || '').trim().toUpperCase();
-  if (!c) return toast('Informe o código do inventário');
-  if (histories.some(h => h.sessionCode === c)) {
-    return toast(`⚠️ O código ${c} já existe no histórico. Escolha outro código ou reabra-o no Histórico.`);
+  // Abrindo novo inventário (sempre usa INV + Data + Hora automático e não editável)
+  let c = ($('#sessionCodeInput').value || '').trim().toUpperCase();
+  if (!c || histories.some(h => h.sessionCode === c)) {
+    c = getDefaultSessionCode();
+    $('#sessionCodeInput').value = c;
   }
 
   const pass = ($('#sessionPassInput').value || '').trim();

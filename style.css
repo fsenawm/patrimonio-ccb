@@ -62,7 +62,7 @@ input[type=text],input[type=search],input[type=password],textarea,select{width:1
 select option{background:#0f2442;color:var(--txt)}
 textarea{resize:vertical}
 input:focus,textarea:focus,select:focus{border-color:var(--gold)}
-.readonly-input{background:rgba(0,0,0,.35)!important;color:var(--gold2)!important;font-family:Consolas,monospace!important;font-weight:700}
+.readonly-input{background:rgba(0,0,0,.35)!important;color:var(--gold2)!important;font-family:Consolas,monospace!important;font-weight:700;pointer-events:none;user-select:none;opacity:.92}
 
 .btn{padding:13px 16px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--txt);
   font-size:14px;font-weight:600;cursor:pointer;transition:.15s;text-align:center}
