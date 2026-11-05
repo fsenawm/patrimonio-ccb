@@ -198,6 +198,22 @@
       </div>
     </div>
 
+    <div class="card">
+      <div class="row between">
+        <h2>🛡️ Proteção Anti-Bloqueio (Supabase Free)</h2>
+        <span class="badge ok">ATIVO</span>
+      </div>
+      <p class="muted">O GitHub Actions executa um <b>Keep-Alive automático a cada 3 dias</b> no banco Supabase para nunca pausar por inatividade. Você também pode baixar ou restaurar um backup completo (com fotos e históricos) a qualquer momento:</p>
+      <p id="keepAliveStatus" class="muted">Verificando último sinal de vida (heartbeat)...</p>
+      <div class="row wrap-row">
+        <button id="btnPingKeepAlive" class="btn" type="button">💓 Enviar Sinal Agora</button>
+        <button id="btnBackupJson" class="btn primary" type="button">📦 Baixar Backup Completo (.JSON)</button>
+        <label class="btn file">📂 Restaurar Backup (.JSON)
+          <input id="restoreJsonFile" type="file" accept=".json,application/json" hidden>
+        </label>
+      </div>
+    </div>
+
     <div class="card danger">
       <h2>Apagar Base Mestre Completa</h2>
       <p class="muted">Remove todos os bens cadastrados nos Dados Mestre e históricos (protegido por senha mestre).</p>
@@ -207,7 +223,7 @@
     <div class="card">
       <div class="row between">
         <h2>ℹ️ Versão do Aplicativo</h2>
-        <span id="appVersionBadge" class="badge gold">v1.15.0</span>
+        <span id="appVersionBadge" class="badge gold">v1.16.0</span>
       </div>
       <p id="appVersionInfo" class="muted">Carregando informações da versão...</p>
       <button id="btnForceUpdate" class="btn" type="button" style="width:100%">🔄 Forçar Atualização da Versão</button>

@@ -1,17 +1,18 @@
 'use strict';
 
 /* ====== Versão do Aplicativo e Configuração Padrão do Supabase ====== */
-const APP_VERSION = 'v1.15.0';
-const APP_BUILD_DATE = '05/11/2026 00:57';
-const APP_BUILD_NOTES = 'Logo oficial CCB, ícone/nome do app PatrimonioCCB e cabeçalho CCB Vila Itatiaia';
+const APP_VERSION = 'v1.16.0';
+const APP_BUILD_DATE = '05/11/2026 12:13';
+const APP_BUILD_NOTES = 'Keep-Alive automático (GitHub Actions a cada 3 dias) para nunca pausar o Supabase Free + Backup/Restauração Completa (.JSON)';
 const MASTER_RESET_PASSWORD = 'ccb123@';
 const DEFAULT_SUPABASE_URL = 'https://vjdcsautoooubtjdhswk.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_fmDYGqwIa1IY_B-iNZ4XAQ_QUP1BNmb';
 const META_ROW_CODE = '__INV_META__';
+const KEEPALIVE_ROW_CODE = '__KEEPALIVE__';
 const HIST_PREFIX = '__INV_HIST__';
 
 function isSystemRow(code) {
-  return code === META_ROW_CODE || String(code).startsWith(HIST_PREFIX);
+  return code === META_ROW_CODE || code === KEEPALIVE_ROW_CODE || String(code).startsWith(HIST_PREFIX);
 }
 
 /* ====== Banco local (IndexedDB) ====== */
@@ -740,6 +741,31 @@ const Cloud = {
       console.warn('Erro ao limpar Supabase:', e);
     }
   },
+  async sendKeepAliveHeartbeat(source = 'App PatrimonioCCB') {
+    if (!this.isReady()) return false;
+    const nowIso = new Date().toISOString();
+    const row = {
+      code: KEEPALIVE_ROW_CODE,
+      desc: 'SISTEMA_KEEPALIVE_ATIVO',
+      cat: 'SISTEMA',
+      loc: getDevice(),
+      obs: 'Mantem o banco Supabase Free sempre ativo sem pausar',
+      extra: {
+        last_ping: nowIso,
+        source,
+        user: getUser() || 'Sistema',
+        device: getDevice(),
+      },
+      photo: null,
+      checked: false,
+      at: nowIso,
+      by: getUser() || 'Sistema',
+    };
+    await DB.put(row);
+    const ok = await this.upsert([row]);
+    await refresh();
+    return ok;
+  },
 };
 
 /* ====== Abas ====== */
@@ -1326,6 +1352,54 @@ function initSupabaseConfig() {
     toast('Sincronizando com Supabase...');
     const ok = await Cloud.syncAll(true);
     toast(ok ? 'Base sincronizada ✔' : 'Falha ao sincronizar');
+  });
+
+  $('#btnPingKeepAlive')?.addEventListener('click', async () => {
+    toast('Enviando sinal de vida (Heartbeat) ao Supabase...');
+    const ok = await Cloud.sendKeepAliveHeartbeat('Acionamento Manual em Ajustes');
+    toast(ok ? '💓 Sinal enviado! Projeto Supabase renovado por mais 7 dias ✔' : 'Falha ao enviar sinal');
+  });
+
+  $('#btnBackupJson')?.addEventListener('click', async () => {
+    const allRows = await DB.all();
+    if (!allRows.length) return toast('Nenhum dado na base para fazer backup');
+    const payload = {
+      app: 'PatrimonioCCB – CCB Vila Itatiaia',
+      version: APP_VERSION,
+      exportedAt: new Date().toISOString(),
+      exportedBy: getUser() || 'Contador',
+      exportedDevice: getDevice(),
+      totalRecords: allRows.length,
+      records: allRows,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `backup_completo_patrimonio_ccb_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    toast('📦 Backup completo (.JSON com fotos e históricos) baixado!');
+  });
+
+  $('#restoreJsonFile')?.addEventListener('change', async e => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    try {
+      const text = await f.text();
+      const parsed = JSON.parse(text);
+      const records = Array.isArray(parsed) ? parsed : (parsed.records || []);
+      if (!records.length) return toast('Arquivo de backup vazio ou inválido');
+      for (const r of records) {
+        if (r && r.code) await DB.put(r);
+      }
+      if (Cloud.isReady()) {
+        await Cloud.upsert(records.filter(r => r && r.code));
+      }
+      await refresh();
+      toast(`✔ Backup restaurado com sucesso (${records.length} registros)!`);
+    } catch (err) {
+      toast('❌ Erro ao ler arquivo de backup JSON');
+    }
   });
 }
 
@@ -2267,6 +2341,17 @@ async function refresh() {
   if ($('#stNew')) $('#stNew').textContent = createdSpot;
   if ($('#progress')) $('#progress').style.width = items.length ? (ok / items.length * 100) + '%' : '0';
 
+  const kaRow = allRows.find(i => i.code === KEEPALIVE_ROW_CODE);
+  if ($('#keepAliveStatus')) {
+    if (kaRow?.extra?.last_ping) {
+      const dt = new Date(kaRow.extra.last_ping).toLocaleString('pt-BR');
+      const src = kaRow.extra.source || 'Automático';
+      $('#keepAliveStatus').innerHTML = `💓 Último sinal registrado no banco: <b>${esc(dt)}</b> (${esc(src)})`;
+    } else {
+      $('#keepAliveStatus').textContent = '💓 Proteção ativa (aguardando próximo ciclo ou clique em Enviar Sinal Agora).';
+    }
+  }
+
   updateSessionUI();
   renderHistory();
   renderReconcile();
@@ -2360,6 +2445,12 @@ $('#manualForm').onsubmit = e => {
 
   if (Cloud.isReady()) {
     await Cloud.syncAll(false);
+    // Registra automaticamente um sinal de vida (keep-alive) ao abrir o app (máx. 1x a cada 12h por aparelho)
+    const lastLocalPing = Number(localStorage.getItem('last_keepalive_ts') || 0);
+    if (Date.now() - lastLocalPing > 12 * 3600 * 1000) {
+      localStorage.setItem('last_keepalive_ts', String(Date.now()));
+      Cloud.sendKeepAliveHeartbeat('Abertura do App');
+    }
     setInterval(() => {
       if (document.visibilityState === 'visible') Cloud.syncAll(false);
     }, 8000);

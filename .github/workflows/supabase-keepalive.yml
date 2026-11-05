@@ -1,0 +1,63 @@
+name: Supabase Keep-Alive (PatrimonioCCB)
+
+on:
+  schedule:
+    # Executa automaticamente a cada 3 dias às 09:00 UTC (06:00 BRT)
+    # para impedir que o projeto Supabase no plano Free entre em pausa por inatividade (7 dias)
+    - cron: '0 9 */3 * *'
+  workflow_dispatch: # Permite acionar manualmente pela aba Actions do GitHub a qualquer momento
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping & Write Heartbeat no Supabase
+        env:
+          SUPABASE_URL: 'https://vjdcsautoooubtjdhswk.supabase.co'
+          SUPABASE_KEY: 'sb_publishable_fmDYGqwIa1IY_B-iNZ4XAQ_QUP1BNmb'
+        run: |
+          NOW_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "Enviando heartbeat para o Supabase em $NOW_ISO..."
+
+          # 1. Faz leitura real na tabela patrimonio_items
+          HTTP_GET=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${SUPABASE_URL}/rest/v1/patrimonio_items?select=code&limit=1" \
+            -H "apikey: ${SUPABASE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_KEY}")
+          echo "Status Leitura (GET): ${HTTP_GET}"
+
+          # 2. Faz gravação/atualização real na linha de sistema __KEEPALIVE__ para registrar atividade no PostgreSQL
+          PAYLOAD=$(cat <<EOF
+          [{
+            "code": "__KEEPALIVE__",
+            "desc_item": "SISTEMA_KEEPALIVE_ATIVO",
+            "cat": "SISTEMA",
+            "loc": "GitHub Actions Cron",
+            "obs": "Mantem o banco Supabase Free sempre ativo sem pausar",
+            "extra": {
+              "last_ping": "${NOW_ISO}",
+              "source": "GitHub Actions Scheduled Keep-Alive"
+            },
+            "checked": false,
+            "at": "${NOW_ISO}",
+            "by_user": "GitHub Actions",
+            "updated_at": "${NOW_ISO}"
+          }]
+          EOF
+          )
+
+          HTTP_POST=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST "${SUPABASE_URL}/rest/v1/patrimonio_items?on_conflict=code" \
+            -H "apikey: ${SUPABASE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: resolution=merge-duplicates,return=minimal" \
+            -d "${PAYLOAD}")
+          echo "Status Escrita Heartbeat (POST): ${HTTP_POST}"
+
+          if [ "$HTTP_GET" -ge 200 ] && [ "$HTTP_GET" -lt 300 ] && [ "$HTTP_POST" -ge 200 ] && [ "$HTTP_POST" -lt 300 ]; then
+            echo "✔ Supabase ativo e preservado com sucesso!"
+          else
+            echo "❌ Falha ao comunicar com o Supabase"
+            exit 1
+          fi
