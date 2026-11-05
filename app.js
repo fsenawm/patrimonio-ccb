@@ -39,7 +39,7 @@ function toast(msg) {
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(t._t);
-  t._t = setTimeout(() => t.classList.remove('show'), 2800);
+  t._t = setTimeout(() => t.classList.remove('show'), 3000);
 }
 
 let items = [];
@@ -49,11 +49,66 @@ let currentCode = null;
 let newItemPhotoData = null;
 let wasScanningBeforePopup = false;
 let targetSearchCode = null;
-let sessionModalMode = 'new'; // 'new' | 'join'
 let pendingDeleteSessionCode = null;
+let pendingReopenSessionCode = null;
 let syncBusy = false;
 
-/* ====== Sessão de Inventário, Senha & Histórico ====== */
+/* ====== Detecção e Gestão do Nome do Dispositivo ====== */
+function detectDefaultDevice() {
+  const ua = navigator.userAgent || '';
+  let os = 'Dispositivo';
+  if (/android/i.test(ua)) {
+    const m = ua.match(/Android\s+[\d.]+;\s*([^;)]+?)(?:\s+Build\/|\))/i);
+    os = m && m[1] ? `Android (${m[1].trim()})` : 'Android';
+  } else if (/iPhone/i.test(ua)) {
+    os = 'iPhone (iOS)';
+  } else if (/iPad/i.test(ua)) {
+    os = 'iPad (iPadOS)';
+  } else if (/Windows/i.test(ua)) {
+    os = 'Windows PC';
+  } else if (/Macintosh|Mac OS X/i.test(ua)) {
+    os = 'Mac';
+  } else if (/Linux/i.test(ua)) {
+    os = 'Linux PC';
+  }
+
+  let browser = '';
+  if (/Edg\//i.test(ua)) browser = 'Edge';
+  else if (/OPR\//i.test(ua)) browser = 'Opera';
+  else if (/Chrome\//i.test(ua)) browser = 'Chrome';
+  else if (/Safari\//i.test(ua) && !/Chrome/i.test(ua)) browser = 'Safari';
+  else if (/Firefox\//i.test(ua)) browser = 'Firefox';
+
+  return browser ? `${os} · ${browser}` : os;
+}
+
+// Tenta refinar o modelo do aparelho via Client Hints (Android Chrome moderno)
+if (navigator.userAgentData?.getHighEntropyValues) {
+  navigator.userAgentData.getHighEntropyValues(['model', 'platform']).then(info => {
+    if (info?.model && !localStorage.getItem('device_manual')) {
+      const label = `${info.platform || 'Android'} (${info.model})`;
+      localStorage.setItem('device_name', label);
+    }
+  }).catch(() => {});
+}
+
+function getDevice() {
+  let d = (localStorage.getItem('device_name') || '').trim();
+  if (!d) {
+    d = detectDefaultDevice();
+    localStorage.setItem('device_name', d);
+  }
+  return d;
+}
+
+function setDevice(devName) {
+  const clean = (devName || '').trim() || detectDefaultDevice();
+  localStorage.setItem('device_name', clean);
+  localStorage.setItem('device_manual', '1');
+  return clean;
+}
+
+/* ====== Sessão de Inventário Única, Usuário & Histórico ====== */
 function getDefaultSessionCode() {
   const d = new Date();
   const ym = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
@@ -61,7 +116,19 @@ function getDefaultSessionCode() {
   return `INV-${ym}-${rand}`;
 }
 
+function findGlobalOpenInventory() {
+  return histories.find(h => h.status !== 'ENCERRADO') || null;
+}
+
 function getSessionCode() {
+  const openInv = findGlobalOpenInventory();
+  if (openInv) {
+    // Regra: todos os usuários trabalham obrigatoriamente no único inventário aberto!
+    if (localStorage.getItem('inv_session_code') !== openInv.sessionCode) {
+      localStorage.setItem('inv_session_code', openInv.sessionCode);
+    }
+    return openInv.sessionCode;
+  }
   return (localStorage.getItem('inv_session_code') || '').trim();
 }
 
@@ -102,6 +169,7 @@ function updateSessionUI() {
   const hasSession = Boolean(s);
   const u = getUser() || 'Identificar';
   const closed = hasSession && isCurrentSessionClosed();
+  const activeHist = getActiveHistoryObj();
 
   if ($('#sessionCodeLabel')) $('#sessionCodeLabel').textContent = s || 'Sem inventário';
   if ($('#scanSessionTitle')) $('#scanSessionTitle').textContent = s || 'Nenhum inventário ativo';
@@ -119,9 +187,14 @@ function updateSessionUI() {
     }
   }
   if ($('#scanSessionStatusText')) {
-    $('#scanSessionStatusText').textContent = !hasSession
-      ? 'Abra ou entre em um inventário'
-      : (closed ? 'Encerrado no histórico' : 'Em contagem');
+    if (!hasSession) {
+      $('#scanSessionStatusText').textContent = 'Abra um inventário para iniciar';
+    } else if (closed) {
+      $('#scanSessionStatusText').textContent = 'Encerrado no histórico';
+    } else {
+      const opener = activeHist?.startedBy ? ` · Aberto por ${activeHist.startedBy}` : '';
+      $('#scanSessionStatusText').textContent = `Em contagem${opener}`;
+    }
   }
 
   $('#closedSessionBanner')?.classList.toggle('hidden', !closed);
@@ -136,8 +209,12 @@ function buildSnapshotFromItems(itemList) {
     if (it.checked) {
       snap[it.code] = {
         checked: true,
+        desc: it.desc || '',
+        cat: it.cat || '',
+        loc: it.loc || '',
         at: it.at || new Date().toISOString(),
         by: it.by || getUser() || 'Contador',
+        device: it.extra?._count_device || getDevice(),
         method: it.extra?._count_method || 'Leitura Código',
       };
     }
@@ -145,7 +222,20 @@ function buildSnapshotFromItems(itemList) {
   return snap;
 }
 
-async function saveSessionToHistory({ sessionCode, status, password, startedBy, startedAt, closedBy, closedAt }) {
+async function saveSessionToHistory({
+  sessionCode,
+  status,
+  password,
+  startedBy,
+  startedDevice,
+  startedAt,
+  closedBy,
+  closedDevice,
+  closedAt,
+  reopenedBy,
+  reopenedDevice,
+  reopenedAt,
+}) {
   if (!sessionCode) return null;
   const rowCode = HIST_PREFIX + sessionCode;
   const existingRow = await DB.get(rowCode);
@@ -159,9 +249,14 @@ async function saveSessionToHistory({ sessionCode, status, password, startedBy, 
     status: status || prevExtra.status || 'ABERTO',
     password: password !== undefined ? password : (prevExtra.password || ''),
     startedBy: startedBy || prevExtra.startedBy || getUser() || 'Contador',
+    startedDevice: startedDevice || prevExtra.startedDevice || getDevice(),
     startedAt: startedAt || prevExtra.startedAt || new Date().toISOString(),
     closedBy: closedBy !== undefined ? closedBy : (prevExtra.closedBy || null),
+    closedDevice: closedDevice !== undefined ? closedDevice : (prevExtra.closedDevice || null),
     closedAt: closedAt !== undefined ? closedAt : (prevExtra.closedAt || null),
+    reopenedBy: reopenedBy !== undefined ? reopenedBy : (prevExtra.reopenedBy || null),
+    reopenedDevice: reopenedDevice !== undefined ? reopenedDevice : (prevExtra.reopenedDevice || null),
+    reopenedAt: reopenedAt !== undefined ? reopenedAt : (prevExtra.reopenedAt || null),
     updatedAt: new Date().toISOString(),
     totalMaster: allMaster.length,
     totalCounted: countedCount,
@@ -172,7 +267,7 @@ async function saveSessionToHistory({ sessionCode, status, password, startedBy, 
     code: rowCode,
     desc: `HIST_INVENTARIO_${sessionCode}`,
     cat: extraData.status,
-    loc: '',
+    loc: extraData.startedDevice || '',
     obs: '',
     extra: extraData,
     photo: null,
@@ -289,14 +384,21 @@ const Cloud = {
       console.warn('Erro ao remover no Supabase:', e);
     }
   },
-  async saveActiveSessionMeta(sessionCode, startedBy, password, status = 'ABERTO') {
+  async saveActiveSessionMeta(sessionCode, startedBy, password, status = 'ABERTO', startedDevice = '') {
     const metaRow = {
       code: META_ROW_CODE,
       desc: 'META_SESSAO_INVENTARIO',
       cat: status,
-      loc: '',
+      loc: startedDevice || getDevice(),
       obs: '',
-      extra: { sessionCode, startedBy, password, status, updatedAt: new Date().toISOString() },
+      extra: {
+        sessionCode,
+        startedBy,
+        startedDevice: startedDevice || getDevice(),
+        password,
+        status,
+        updatedAt: new Date().toISOString(),
+      },
       photo: null,
       checked: false,
       at: new Date().toISOString(),
@@ -322,29 +424,36 @@ const Cloud = {
       if (!res.ok) throw new Error(await res.text());
       const rows = await res.json();
       const remoteCodes = new Set();
+      let remoteOpenSession = null;
+
       for (const r of rows) {
         const it = this.fromRow(r);
         remoteCodes.add(it.code);
         await DB.put(it);
-        if (r.code === META_ROW_CODE && r.extra?.sessionCode && !localStorage.getItem('inv_session_manual')) {
-          setSessionCode(r.extra.sessionCode);
+        if (String(r.code).startsWith(HIST_PREFIX) && r.extra?.status !== 'ENCERRADO' && r.extra?.sessionCode) {
+          remoteOpenSession = r.extra.sessionCode;
         }
       }
+
       const allLocal = await DB.all();
       if (pushLocalFirst) {
         const missingOnCloud = allLocal.filter(i => !remoteCodes.has(i.code));
         if (missingOnCloud.length) await this.upsert(missingOnCloud);
       } else {
-        // Remove localmente históricos/sessões que foram eliminados na nuvem
         for (const locIt of allLocal) {
           if (isSystemRow(locIt.code) && !remoteCodes.has(locIt.code)) {
             await DB.del(locIt.code);
-            if (locIt.code === HIST_PREFIX + getSessionCode()) {
-              setSessionCode('');
+            if (locIt.code === HIST_PREFIX + localStorage.getItem('inv_session_code')) {
+              localStorage.removeItem('inv_session_code');
               localStorage.removeItem('inv_session_manual');
             }
           }
         }
+      }
+
+      // Se existe um inventário aberto na nuvem, vincula todos os usuários a ele automaticamente
+      if (remoteOpenSession) {
+        localStorage.setItem('inv_session_code', remoteOpenSession);
       }
 
       const finalLocal = await DB.all();
@@ -390,68 +499,60 @@ document.querySelectorAll('.tabs button').forEach(b => {
   b.onclick = () => switchTab(b.dataset.tab);
 });
 
-/* ====== Modal de Abertura de Novo Inventário (com Senha) ou Entrar em Existente ====== */
-function setSessionModalMode(mode) {
-  sessionModalMode = mode;
-  $('#btnModeNewInv').classList.toggle('sel', mode === 'new');
-  $('#btnModeJoinInv').classList.toggle('sel', mode === 'join');
-  $('#newInvPassGroup').classList.toggle('hidden', mode !== 'new');
-  $('#joinInvGroup').classList.toggle('hidden', mode !== 'join');
-  $('#btnGenerateSessionCode').classList.toggle('hidden', mode !== 'new');
-
-  if (mode === 'new') {
-    $('#sessionPassInput').setAttribute('required', 'required');
-    $('#btnSubmitSession').textContent = '✔ Abrir Novo Inventário';
-  } else {
-    $('#sessionPassInput').removeAttribute('required');
-    $('#btnSubmitSession').textContent = '👥 Entrar na Contagem';
-    renderOpenSessionsChips();
-  }
-}
-
-function renderOpenSessionsChips() {
-  const box = $('#openSessionsList');
-  if (!box) return;
-  const openList = histories.filter(h => h.status !== 'ENCERRADO');
-  if (!openList.length) {
-    box.innerHTML = '<span class="muted">Nenhum inventário aberto encontrado. Crie um novo na opção ao lado.</span>';
-    return;
-  }
-  box.innerHTML = openList.map(h =>
-    `<button type="button" class="chip gold" data-pick-session="${esc(h.sessionCode)}">🏷️ ${esc(h.sessionCode)} (${h.totalCounted || 0} contados)</button>`
-  ).join('');
-  box.querySelectorAll('[data-pick-session]').forEach(btn => {
-    btn.onclick = () => {
-      $('#sessionCodeInput').value = btn.dataset.pickSession;
-    };
-  });
-}
-
-$('#btnModeNewInv')?.addEventListener('click', () => setSessionModalMode('new'));
-$('#btnModeJoinInv')?.addEventListener('click', () => setSessionModalMode('join'));
-
-function openSessionModal(forceUser = false, defaultMode = 'new') {
+/* ====== Modal de Abertura de Novo Inventário ou Entrada no Único Inventário Aberto ====== */
+async function openSessionModal(forceUser = false) {
   stopScan();
-  $('#sessionUserInput').value = getUser() || '';
-  const curCode = getSessionCode();
-  if (defaultMode === 'new') {
-    const suggested = (!curCode || histories.some(h => h.sessionCode === curCode))
-      ? getDefaultSessionCode()
-      : curCode;
-    $('#sessionCodeInput').value = suggested;
-  } else {
-    $('#sessionCodeInput').value = curCode || (histories[0]?.sessionCode || '');
+  if (Cloud.isReady()) {
+    await Cloud.syncAll(false);
   }
+
+  const openInv = findGlobalOpenInventory();
+  $('#sessionUserInput').value = getUser() || '';
+  $('#sessionDeviceInput').value = getDevice();
   $('#sessionPassInput').value = '';
-  $('#sessionResetChecks').checked = true;
-  setSessionModalMode(defaultMode);
+
+  const codeInput = $('#sessionCodeInput');
+  const notice = $('#singleOpenNotice');
+  const passGroup = $('#newInvPassGroup');
+  const genBtn = $('#btnGenerateSessionCode');
+
+  if (openInv) {
+    // JÁ EXISTE UM INVENTÁRIO ABERTO: Todos os usuários trabalham obrigatoriamente nele!
+    $('#sessionModalTitle').textContent = '👥 Inventário em Andamento';
+    notice.classList.remove('hidden');
+    notice.innerHTML = `
+      <div><b>🔒 Inventário Único Ativo:</b> <code>${esc(openInv.sessionCode)}</code></div>
+      <div><b>Aberto por:</b> ${esc(openInv.startedBy || '—')} (${esc(openInv.startedDevice || '—')})</div>
+      <div><b>Data/Hora:</b> ${openInv.startedAt ? new Date(openInv.startedAt).toLocaleString('pt-BR') : '—'}</div>
+      <div class="muted" style="margin-top:4px">Não é permitido abrir outro inventário enquanto este estiver aberto. Confirme seu nome e dispositivo para contar neste inventário:</div>
+    `;
+    codeInput.value = openInv.sessionCode;
+    codeInput.setAttribute('readonly', 'readonly');
+    codeInput.classList.add('readonly-input');
+    genBtn.classList.add('hidden');
+    passGroup.classList.add('hidden');
+    $('#sessionPassInput').removeAttribute('required');
+    $('#btnSubmitSession').textContent = '👥 Entrar e Contar neste Inventário';
+  } else {
+    // NENHUM INVENTÁRIO ABERTO: Permite abrir um novo definindo código e senha
+    $('#sessionModalTitle').textContent = '➕ Abrir Novo Inventário';
+    notice.classList.add('hidden');
+    codeInput.value = getDefaultSessionCode();
+    codeInput.removeAttribute('readonly');
+    codeInput.classList.remove('readonly-input');
+    genBtn.classList.remove('hidden');
+    passGroup.classList.remove('hidden');
+    $('#sessionPassInput').setAttribute('required', 'required');
+    $('#btnSubmitSession').textContent = '✔ Abrir Inventário com Senha';
+  }
 
   $('#btnCancelSession').classList.toggle('hidden', forceUser && !getUser());
   $('#btnCloseSessionModal').classList.toggle('hidden', forceUser && !getUser());
   $('#sessionModal').classList.remove('hidden');
+
   setTimeout(() => {
     if (!getUser()) $('#sessionUserInput').focus();
-    else if (defaultMode === 'new') $('#sessionPassInput').focus();
+    else if (!openInv) $('#sessionPassInput').focus();
   }, 80);
 }
 
@@ -460,69 +561,79 @@ function closeSessionModal() {
 }
 
 $('#btnGenerateSessionCode')?.addEventListener('click', () => {
+  if (findGlobalOpenInventory()) {
+    return toast('⚠️ Já existe um inventário aberto! Encerre-o antes de gerar outro.');
+  }
   const d = new Date();
   const rand = String(Math.floor(100 + Math.random() * 900));
   const code = `INV-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${rand}`;
   $('#sessionCodeInput').value = code;
 });
 
-$('#btnSessionBanner')?.addEventListener('click', () => openSessionModal(false, 'new'));
-$('#btnOpenSessionModal')?.addEventListener('click', () => openSessionModal(false, 'new'));
-$('#btnManageSession')?.addEventListener('click', () => openSessionModal(false, 'new'));
-$('#btnNewInvFromHist')?.addEventListener('click', () => openSessionModal(false, 'new'));
-$('#btnUser')?.addEventListener('click', () => openSessionModal(false, 'join'));
+$('#btnSessionBanner')?.addEventListener('click', () => openSessionModal(false));
+$('#btnOpenSessionModal')?.addEventListener('click', () => openSessionModal(false));
+$('#btnManageSession')?.addEventListener('click', () => openSessionModal(false));
+$('#btnNewInvFromHist')?.addEventListener('click', () => {
+  const openInv = findGlobalOpenInventory();
+  if (openInv) {
+    toast(`⚠️ O inventário ${openInv.sessionCode} já está aberto por ${openInv.startedBy}. Encerre-o primeiro!`);
+  }
+  openSessionModal(false);
+});
+$('#btnUser')?.addEventListener('click', () => openSessionModal(false));
 $('#btnCloseSessionModal')?.addEventListener('click', closeSessionModal);
 $('#btnCancelSession')?.addEventListener('click', closeSessionModal);
 
 $('#sessionForm')?.addEventListener('submit', async e => {
   e.preventDefault();
   const u = setUser($('#sessionUserInput').value);
+  const dev = setDevice($('#sessionDeviceInput').value);
+
+  // Sincroniza antes de confirmar para garantir que ninguém abriu outro inventário no mesmo instante
+  if (Cloud.isReady()) await Cloud.syncAll(false);
+  const openInv = findGlobalOpenInventory();
+
+  if (openInv) {
+    // Conecta o usuário ao único inventário aberto
+    setSessionCode(openInv.sessionCode);
+    await refresh();
+    closeSessionModal();
+    toast(`👥 Conectado ao inventário ${openInv.sessionCode} (${u} · ${dev})`);
+    return;
+  }
+
+  // Abrindo novo inventário (quando não há nenhum aberto)
   const c = ($('#sessionCodeInput').value || '').trim().toUpperCase();
   if (!c) return toast('Informe o código do inventário');
-
-  if (sessionModalMode === 'new') {
-    const pass = ($('#sessionPassInput').value || '').trim();
-    if (!pass) return toast('🔒 Defina uma senha de abertura para o novo inventário!');
-
-    // Salva o estado do inventário anterior no histórico antes de iniciar o novo
-    const prevCode = getSessionCode();
-    if (prevCode && prevCode !== c) {
-      await saveSessionToHistory({ sessionCode: prevCode });
-    }
-
-    setSessionCode(c);
-    localStorage.setItem('inv_session_manual', '1');
-
-    if ($('#sessionResetChecks').checked) {
-      await clearCurrentItemChecksOnly();
-    }
-
-    await Cloud.saveActiveSessionMeta(c, u, pass, 'ABERTO');
-    await saveSessionToHistory({
-      sessionCode: c,
-      status: 'ABERTO',
-      password: pass,
-      startedBy: u,
-      startedAt: new Date().toISOString(),
-      closedBy: null,
-      closedAt: null,
-    });
-    await refresh();
-    closeSessionModal();
-    toast(`✔ Inventário ${c} aberto com senha!`);
-  } else {
-    // Entrando em inventário existente
-    setSessionCode(c);
-    localStorage.setItem('inv_session_manual', '1');
-    await Cloud.syncAll(false);
-    const existing = histories.find(h => h.sessionCode === c);
-    if (existing && existing.snapshot) {
-      await restoreSnapshotToItems(existing.snapshot, c);
-    }
-    await refresh();
-    closeSessionModal();
-    toast(`👥 Conectado ao inventário ${c} como ${u}`);
+  if (histories.some(h => h.sessionCode === c)) {
+    return toast(`⚠️ O código ${c} já existe no histórico. Escolha outro código ou reabra-o no Histórico.`);
   }
+
+  const pass = ($('#sessionPassInput').value || '').trim();
+  if (!pass) return toast('🔒 Defina uma senha de abertura para o novo inventário!');
+
+  setSessionCode(c);
+  localStorage.setItem('inv_session_manual', '1');
+
+  // Inicia contagem limpa para o novo inventário mantendo Dados Mestre
+  await clearCurrentItemChecksOnly();
+
+  const nowIso = new Date().toISOString();
+  await Cloud.saveActiveSessionMeta(c, u, pass, 'ABERTO', dev);
+  await saveSessionToHistory({
+    sessionCode: c,
+    status: 'ABERTO',
+    password: pass,
+    startedBy: u,
+    startedDevice: dev,
+    startedAt: nowIso,
+    closedBy: null,
+    closedDevice: null,
+    closedAt: null,
+  });
+  await refresh();
+  closeSessionModal();
+  toast(`✔ Inventário ${c} aberto por ${u} (${dev})!`);
 });
 
 async function clearCurrentItemChecksOnly() {
@@ -536,6 +647,7 @@ async function clearCurrentItemChecksOnly() {
       if (it.extra) {
         delete it.extra._inv_session;
         delete it.extra._count_method;
+        delete it.extra._count_device;
       }
       await DB.put(it);
       updated.push(it);
@@ -554,11 +666,21 @@ async function restoreSnapshotToItems(snapshot, sessionCode) {
       it.checked = true;
       it.at = s.at;
       it.by = s.by;
-      it.extra = { ...(it.extra || {}), _inv_session: sessionCode, _count_method: s.method || 'Leitura Código' };
+      it.extra = {
+        ...(it.extra || {}),
+        _inv_session: sessionCode,
+        _count_method: s.method || 'Leitura Código',
+        _count_device: s.device || '—',
+      };
     } else {
       it.checked = false;
       it.at = null;
       it.by = null;
+      if (it.extra) {
+        delete it.extra._inv_session;
+        delete it.extra._count_method;
+        delete it.extra._count_device;
+      }
     }
     await DB.put(it);
     updated.push(it);
@@ -585,6 +707,7 @@ async function getSessionPassword(sessionCode) {
 function openCloseInvModal() {
   stopScan();
   const s = getSessionCode();
+  if (!s) return toast('Nenhum inventário aberto no momento.');
   $('#closeInvCodeLabel').textContent = s;
   $('#closeInvPassInput').value = '';
   $('#closeInvGoCompare').checked = false;
@@ -606,24 +729,24 @@ $('#closeInvForm')?.addEventListener('submit', async e => {
   const typedPass = ($('#closeInvPassInput').value || '').trim();
   const savedPass = await getSessionPassword(s);
 
-  if (!savedPass) {
-    // Caso tenha sido iniciado antes de existir senha, aceita e registra a senha informada
-  } else if (typedPass !== savedPass) {
+  if (savedPass && typedPass !== savedPass) {
     navigator.vibrate?.([200, 100, 200]);
     return toast('❌ Senha incorreta! Informe a senha definida na abertura do inventário.');
   }
 
   const goCompare = $('#closeInvGoCompare').checked;
   const user = getUser() || 'Contador';
+  const dev = getDevice();
 
   await saveSessionToHistory({
     sessionCode: s,
     status: 'ENCERRADO',
     password: savedPass || typedPass,
     closedBy: user,
+    closedDevice: dev,
     closedAt: new Date().toISOString(),
   });
-  await Cloud.saveActiveSessionMeta(s, user, savedPass || typedPass, 'ENCERRADO');
+  await Cloud.saveActiveSessionMeta(s, user, savedPass || typedPass, 'ENCERRADO', dev);
   await refresh();
   closeCloseInvModal();
 
@@ -633,13 +756,21 @@ $('#closeInvForm')?.addEventListener('submit', async e => {
   }
 });
 
-/* ====== Modal 6: Reabrir Contagem do Histórico (Exige Senha de Abertura) ====== */
-let pendingReopenSessionCode = null;
-
-function openReopenInvModal(sessionCode) {
+/* ====== Modal 6: Reabrir Contagem do Histórico (Exige Senha + Bloqueia se já houver outro aberto) ====== */
+async function openReopenInvModal(sessionCode) {
   stopScan();
+  if (Cloud.isReady()) await Cloud.syncAll(false);
+
   const target = (sessionCode || getSessionCode() || '').trim();
   if (!target) return toast('Nenhum inventário selecionado para reabrir.');
+
+  // Regra: Não permite reabrir se já houver outro inventário aberto!
+  const openInv = findGlobalOpenInventory();
+  if (openInv && openInv.sessionCode !== target) {
+    navigator.vibrate?.([200, 100, 200]);
+    return toast(`⚠️ O inventário ${openInv.sessionCode} está ABERTO! Encerre-o antes de reabrir o ${target}.`);
+  }
+
   pendingReopenSessionCode = target;
   $('#reopenInvCodeLabel').textContent = pendingReopenSessionCode;
   $('#reopenInvPassInput').value = '';
@@ -659,6 +790,12 @@ $('#reopenInvForm')?.addEventListener('submit', async e => {
   const targetCode = (pendingReopenSessionCode || getSessionCode() || '').trim();
   if (!targetCode) return closeReopenInvModal();
 
+  const openInv = findGlobalOpenInventory();
+  if (openInv && openInv.sessionCode !== targetCode) {
+    closeReopenInvModal();
+    return toast(`⚠️ Já existe o inventário ${openInv.sessionCode} aberto!`);
+  }
+
   const typedPass = ($('#reopenInvPassInput').value || '').trim();
   const savedPass = await getSessionPassword(targetCode);
 
@@ -676,6 +813,7 @@ async function executeReopenInventorySession(sessionCode, validPass) {
   const snap = histRow?.extra?.snapshot || null;
   const pass = validPass || histRow?.extra?.password || '';
   const user = getUser() || 'Contador';
+  const dev = getDevice();
 
   setSessionCode(sessionCode);
   localStorage.setItem('inv_session_manual', '1');
@@ -689,11 +827,15 @@ async function executeReopenInventorySession(sessionCode, validPass) {
     status: 'ABERTO',
     password: pass,
     closedBy: null,
+    closedDevice: null,
     closedAt: null,
+    reopenedBy: user,
+    reopenedDevice: dev,
+    reopenedAt: new Date().toISOString(),
   });
-  await Cloud.saveActiveSessionMeta(sessionCode, user, pass, 'ABERTO');
+  await Cloud.saveActiveSessionMeta(sessionCode, user, pass, 'ABERTO', dev);
   await refresh();
-  toast(`🔓 Inventário ${sessionCode} reaberto para contagem!`);
+  toast(`🔓 Inventário ${sessionCode} reaberto por ${user}!`);
   switchTab('scan');
 }
 
@@ -738,7 +880,6 @@ $('#deleteInvForm')?.addEventListener('submit', async e => {
   try {
     const activeBefore = getSessionCode();
 
-    // 1. Limpa todas as contagens dos itens associadas a esse inventário
     const all = (await DB.all()).filter(i => !isSystemRow(i.code));
     const updated = [];
     for (const it of all) {
@@ -749,6 +890,7 @@ $('#deleteInvForm')?.addEventListener('submit', async e => {
         if (it.extra) {
           delete it.extra._inv_session;
           delete it.extra._count_method;
+          delete it.extra._count_device;
         }
         await DB.put(it);
         updated.push(it);
@@ -756,12 +898,10 @@ $('#deleteInvForm')?.addEventListener('submit', async e => {
     }
     if (updated.length) await Cloud.upsert(updated);
 
-    // 2. Remove definitivamente o registro de histórico dessa contagem do banco local e do Supabase
     const histKey = HIST_PREFIX + targetCode;
     await DB.del(histKey);
     await Cloud.deleteOne(histKey);
 
-    // 3. Remove o META se apontava para esse inventário e limpa o código ativo
     const metaRow = await DB.get(META_ROW_CODE);
     if (targetCode === activeBefore || metaRow?.extra?.sessionCode === targetCode) {
       await DB.del(META_ROW_CODE);
@@ -773,8 +913,9 @@ $('#deleteInvForm')?.addEventListener('submit', async e => {
     await refresh();
 
     if (targetCode === activeBefore) {
-      if (histories.length > 0) {
-        setSessionCode(histories[0].sessionCode);
+      const nextOpen = findGlobalOpenInventory();
+      if (nextOpen) {
+        setSessionCode(nextOpen.sessionCode);
       } else {
         setSessionCode('');
       }
@@ -791,7 +932,7 @@ $('#deleteInvForm')?.addEventListener('submit', async e => {
   }
 });
 
-/* ====== Renderização do Histórico de Inventários ====== */
+/* ====== Renderização do Histórico de Inventários + Detalhes de Auditoria ====== */
 function renderHistory() {
   const ul = $('#historyList');
   if (!ul) return;
@@ -805,30 +946,86 @@ function renderHistory() {
   ul.innerHTML = histories.map(h => {
     const isCurrent = h.sessionCode === activeCode;
     const isClosed = h.status === 'ENCERRADO';
-    const dt = h.closedAt
-      ? `Encerrado em ${new Date(h.closedAt).toLocaleString('pt-BR')} por ${esc(h.closedBy || h.startedBy || '—')}`
-      : `Aberto em ${new Date(h.startedAt).toLocaleString('pt-BR')} por ${esc(h.startedBy || '—')}`;
+    const openInfo = `🟢 <b>Aberto por:</b> ${esc(h.startedBy || '—')} · 📱 ${esc(h.startedDevice || '—')} · 🕒 ${h.startedAt ? new Date(h.startedAt).toLocaleString('pt-BR') : '—'}`;
+    const closeInfo = isClosed && h.closedAt
+      ? `<small>🔴 <b>Encerrado por:</b> ${esc(h.closedBy || '—')} · 📱 ${esc(h.closedDevice || '—')} · 🕒 ${new Date(h.closedAt).toLocaleString('pt-BR')}</small>`
+      : '';
+    const reopenInfo = h.reopenedAt
+      ? `<small>🔓 <b>Reaberto por:</b> ${esc(h.reopenedBy || '—')} · 📱 ${esc(h.reopenedDevice || '—')} · 🕒 ${new Date(h.reopenedAt).toLocaleString('pt-BR')}</small>`
+      : '';
+
+    const countedNum = h.totalCounted ?? Object.keys(h.snapshot || {}).length;
 
     return `<li>
-      <div class="list-main">
+      <div class="list-main" data-hist-detail="${esc(h.sessionCode)}">
         <div class="thumb">${isClosed ? '🔒' : '📋'}</div>
         <div class="info">
-          <b>${esc(h.sessionCode)} ${isCurrent ? '<span class="badge gold">Ativo na tela</span>' : ''}</b>
-          <small>${dt}</small>
-          <small>Contados: <b>${h.totalCounted ?? 0}</b> de ${h.totalMaster ?? items.length} bens</small>
+          <b>${esc(h.sessionCode)} ${isCurrent ? '<span class="badge gold">Ativo</span>' : ''}</b>
+          <small>${openInfo}</small>
+          ${reopenInfo}
+          ${closeInfo}
+          <small>📊 Contados: <b>${countedNum}</b> de ${h.totalMaster ?? items.length} bens</small>
         </div>
         <span class="badge ${isClosed ? 'bad' : 'ok'}">${isClosed ? 'ENCERRADO' : 'ABERTO'}</span>
       </div>
       <div class="item-actions">
+        <button type="button" class="btn" data-hist-detail="${esc(h.sessionCode)}">📋 Ver Contadores (${countedNum})</button>
         ${isClosed
-          ? `<button type="button" class="btn ok" data-hist-reopen="${esc(h.sessionCode)}">🔓 Reabrir Contagem</button>`
-          : (!isCurrent ? `<button type="button" class="btn primary" data-hist-reopen="${esc(h.sessionCode)}">📂 Carregar Contagem</button>` : '')
+          ? `<button type="button" class="btn ok" data-hist-reopen="${esc(h.sessionCode)}">🔓 Reabrir</button>`
+          : ''
         }
-        <button type="button" class="btn danger" data-hist-delete="${esc(h.sessionCode)}">🗑️ Eliminar Contagem</button>
+        <button type="button" class="btn danger" data-hist-delete="${esc(h.sessionCode)}">🗑️ Eliminar</button>
       </div>
     </li>`;
   }).join('');
 }
+
+function openHistoryDetailModal(sessionCode) {
+  const h = histories.find(x => x.sessionCode === sessionCode);
+  if (!h) return;
+
+  $('#histDetailTitle').textContent = `📜 Auditoria: ${h.sessionCode}`;
+  const isClosed = h.status === 'ENCERRADO';
+  $('#histDetailMeta').innerHTML = `
+    <div><b>Status:</b> <span class="badge ${isClosed ? 'bad' : 'ok'}">${isClosed ? 'ENCERRADO' : 'ABERTO'}</span></div>
+    <div><b>Aberto por:</b> ${esc(h.startedBy || '—')} · 📱 ${esc(h.startedDevice || '—')}</div>
+    <div><b>Data/Hora Abertura:</b> ${h.startedAt ? new Date(h.startedAt).toLocaleString('pt-BR') : '—'}</div>
+    ${h.reopenedAt ? `<div><b>Última Reabertura:</b> ${esc(h.reopenedBy || '—')} (${esc(h.reopenedDevice || '—')}) em ${new Date(h.reopenedAt).toLocaleString('pt-BR')}</div>` : ''}
+    ${isClosed && h.closedAt ? `<div><b>Encerrado por:</b> ${esc(h.closedBy || '—')} (${esc(h.closedDevice || '—')}) em ${new Date(h.closedAt).toLocaleString('pt-BR')}</div>` : ''}
+  `;
+
+  const snap = h.snapshot || {};
+  const entries = Object.entries(snap).sort((a, b) => String(b[1]?.at || '').localeCompare(String(a[1]?.at || '')));
+  const ul = $('#histDetailItems');
+
+  if (!entries.length) {
+    ul.innerHTML = '<li class="empty">Nenhum item foi contado neste inventário ainda.</li>';
+  } else {
+    ul.innerHTML = entries.map(([code, info]) => {
+      const masterIt = findLocal(code);
+      const desc = info.desc || masterIt?.desc || '(Item)';
+      const loc = info.loc || masterIt?.loc || '';
+      const when = info.at ? new Date(info.at).toLocaleString('pt-BR') : '—';
+      return `<li>
+        <div class="info">
+          <b>${esc(desc)} <span class="code">${esc(code)}</span></b>
+          ${loc ? `<small>📍 Local: ${esc(loc)}</small>` : ''}
+          <small>👤 <b>Contado por:</b> ${esc(info.by || '—')} · 📱 <b>Dispositivo:</b> ${esc(info.device || '—')}</small>
+          <small>🕒 <b>Data/Hora:</b> ${esc(when)} · 🏷️ ${esc(info.method || 'Leitura')}</small>
+        </div>
+      </li>`;
+    }).join('');
+  }
+
+  $('#histDetailModal').classList.remove('hidden');
+}
+
+function closeHistoryDetailModal() {
+  $('#histDetailModal').classList.add('hidden');
+}
+
+$('#btnCloseHistDetail')?.addEventListener('click', closeHistoryDetailModal);
+$('#btnOkHistDetail')?.addEventListener('click', closeHistoryDetailModal);
 
 $('#historyList')?.addEventListener('click', e => {
   const reopenBtn = e.target.closest('[data-hist-reopen]');
@@ -839,6 +1036,11 @@ $('#historyList')?.addEventListener('click', e => {
   const delBtn = e.target.closest('[data-hist-delete]');
   if (delBtn) {
     openDeleteInvModal(delBtn.dataset.histDelete);
+    return;
+  }
+  const detailBtn = e.target.closest('[data-hist-detail]');
+  if (detailBtn) {
+    openHistoryDetailModal(detailBtn.dataset.histDetail);
   }
 });
 
@@ -929,6 +1131,9 @@ async function importCSV(file, isReconcileCompare = false) {
   let foundCount = 0;
   let missingCount = 0;
   const imported = [];
+  const user = getUser() || 'Importação CSV';
+  const dev = getDevice();
+  const nowIso = new Date().toISOString();
 
   for (const r of rows.slice(1)) {
     const code = (r[map.code] || '').trim();
@@ -936,7 +1141,17 @@ async function importCSV(file, isReconcileCompare = false) {
     const extra = {};
     heads.forEach((h, i) => { if (!used.has(i) && h && (r[i] || '').trim()) extra[h] = r[i].trim(); });
     const prev = keep ? old.get(code) : null;
-    const mergedExtra = { ...(prev?.extra || {}), ...extra, _in_csv: true };
+    const mergedExtra = {
+      ...(prev?.extra || {}),
+      ...extra,
+      _in_csv: true,
+      _created_by: prev?.extra?._created_by || user,
+      _created_device: prev?.extra?._created_device || dev,
+      _created_at: prev?.extra?._created_at || nowIso,
+      _updated_by: user,
+      _updated_device: dev,
+      _updated_at: nowIso,
+    };
 
     const item = {
       code,
@@ -973,7 +1188,7 @@ async function importCSV(file, isReconcileCompare = false) {
     renderReconcile();
     toast(`${missingCount} itens não encontrados`);
   } else {
-    $('#importMsg').textContent = `✔ ${n} itens importados nos Dados Mestre em ${new Date().toLocaleString('pt-BR')}.`;
+    $('#importMsg').textContent = `✔ ${n} itens importados por ${user} (${dev}) em ${new Date().toLocaleString('pt-BR')}.`;
     localStorage.setItem('lastImport', $('#importMsg').textContent);
     toast(`${n} itens importados`);
   }
@@ -989,14 +1204,35 @@ $('#btnCompareMaster')?.addEventListener('click', async () => {
   toast('Dados atualizados ✔');
 });
 
-/* ====== Exportação CSV Completo ====== */
+/* ====== Exportação CSV Completo com Auditoria de Usuário e Dispositivo ====== */
 $('#btnExport').onclick = () => {
   if (!items.length) return toast('Nada para exportar');
   const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const head = ['codigo_inventario', 'codigo', 'descricao', 'categoria', 'local', 'estado', 'observacao', 'situacao', 'metodo_conferencia', 'data_hora_conferencia', 'usuario'];
+  const head = [
+    'codigo_inventario',
+    'aberto_por',
+    'dispositivo_abertura',
+    'codigo',
+    'descricao',
+    'categoria',
+    'local',
+    'estado',
+    'observacao',
+    'situacao',
+    'metodo_conferencia',
+    'contado_por',
+    'dispositivo_contagem',
+    'data_hora_conferencia',
+    'cadastrado_por',
+    'dispositivo_cadastro',
+    'data_hora_cadastro',
+  ];
   const invCode = getSessionCode();
+  const activeHist = getActiveHistoryObj();
   const lines = [head.join(';')].concat(items.map(i => [
     i.extra?._inv_session || invCode,
+    activeHist?.startedBy || '',
+    activeHist?.startedDevice || '',
     i.code,
     i.desc,
     i.cat,
@@ -1005,12 +1241,16 @@ $('#btnExport').onclick = () => {
     i.obs,
     i.checked ? 'ENCONTRADO' : 'NAO_ENCONTRADO',
     i.checked ? (i.extra?._count_method || 'Leitura Código') : 'Pendente',
-    i.at ? new Date(i.at).toLocaleString('pt-BR') : '',
     i.by || '',
+    i.extra?._count_device || '',
+    i.at ? new Date(i.at).toLocaleString('pt-BR') : '',
+    i.extra?._created_by || '',
+    i.extra?._created_device || '',
+    i.extra?._created_at ? new Date(i.extra._created_at).toLocaleString('pt-BR') : '',
   ].map(q).join(';')));
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }));
-  a.download = `inventario_ccb_${invCode}_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `inventario_ccb_${invCode || 'base'}_${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
 };
 
@@ -1026,6 +1266,8 @@ $('#btnReset').onclick = async () => {
   }
   await DB.clear();
   await Cloud.clearRemote();
+  localStorage.removeItem('inv_session_code');
+  localStorage.removeItem('inv_session_manual');
   await refresh();
   $('#result').innerHTML = '';
   toast('Todos os dados foram apagados');
@@ -1044,7 +1286,7 @@ async function handleScanOrSearch(rawCode) {
   if (!code) return;
 
   if (!getUser() || !getSessionCode()) {
-    openSessionModal(true, 'new');
+    openSessionModal(true);
     return;
   }
 
@@ -1078,7 +1320,7 @@ async function handleScanOrSearch(rawCode) {
     clearTargetSearch();
   }
 
-  // Se o item JÁ FOI CONTADO -> Avisa em Pop-up que outro usuário (ou você) já contou!
+  // Se o item JÁ FOI CONTADO -> Avisa em Pop-up quem contou, qual dispositivo e data/hora!
   if (it.checked) {
     renderItemCard(it);
     openAlreadyCountedPopup(it);
@@ -1086,8 +1328,9 @@ async function handleScanOrSearch(rawCode) {
     return;
   }
 
-  // Item existe e ainda não foi contado -> Registra contagem imediatamente pelo usuário atual!
+  // Item existe e ainda não foi contado -> Registra contagem imediatamente com Usuário + Dispositivo + Data/Hora!
   const user = getUser() || 'Contador';
+  const dev = getDevice();
   const invSession = getSessionCode();
   it.checked = true;
   it.at = new Date().toISOString();
@@ -1096,6 +1339,7 @@ async function handleScanOrSearch(rawCode) {
     ...(it.extra || {}),
     _inv_session: invSession,
     _count_method: 'Leitura Código de Barras',
+    _count_device: dev,
   };
 
   await DB.put(it);
@@ -1104,7 +1348,7 @@ async function handleScanOrSearch(rawCode) {
   await refresh();
   renderItemCard(it);
   navigator.vibrate?.(90);
-  toast(`✔ Contado: ${it.desc}`);
+  toast(`✔ Contado por ${user}: ${it.desc}`);
 }
 
 /* ====== Pop-up 1: Perguntar se deseja criar item não existente ====== */
@@ -1156,14 +1400,16 @@ function openAlreadyCountedPopup(it) {
 
   const when = it.at ? new Date(it.at).toLocaleString('pt-BR') : 'horário não registrado';
   const who = it.by || 'Outro usuário';
+  const dev = it.extra?._count_device || 'Não informado';
   const sess = it.extra?._inv_session || getSessionCode();
   const method = it.extra?._count_method || 'Leitura de código';
 
   $('#alreadyCountedInfo').innerHTML = `
-    <div><b>Contado por:</b> ${esc(who)} ${countedByOther ? '<span class="badge warn">Outro contador</span>' : '<span class="badge ok">Você</span>'}</div>
-    <div><b>Data/Hora:</b> ${esc(when)}</div>
-    <div><b>Inventário:</b> ${esc(sess)}</div>
-    <div><b>Método:</b> ${esc(method)}</div>
+    <div><b>👤 Contado por:</b> ${esc(who)} ${countedByOther ? '<span class="badge warn">Outro contador</span>' : '<span class="badge ok">Você</span>'}</div>
+    <div><b>📱 Dispositivo:</b> ${esc(dev)}</div>
+    <div><b>🕒 Data/Hora:</b> ${esc(when)}</div>
+    <div><b>🏷️ Inventário:</b> ${esc(sess)}</div>
+    <div><b>📌 Método:</b> ${esc(method)}</div>
   `;
   $('#alreadyCountedModal').classList.remove('hidden');
 }
@@ -1184,11 +1430,17 @@ function renderItemCard(it) {
   const state = it.extra?._state || 'Bom';
   const invSess = it.extra?._inv_session || getSessionCode();
   const method = it.extra?._count_method || '';
+  const countDev = it.extra?._count_device || '';
+  const createdBy = it.extra?._created_by || '';
+  const createdDev = it.extra?._created_device || '';
+  const createdAt = it.extra?._created_at ? new Date(it.extra._created_at).toLocaleString('pt-BR') : '';
+
   const fields = [
     ['Categoria', it.cat],
     ['Local', it.loc],
     ['Conservação', state],
     ['Observação', it.obs],
+    ['Cadastrado por', createdBy ? `${createdBy}${createdDev ? ` (${createdDev})` : ''}${createdAt ? ` em ${createdAt}` : ''}` : ''],
   ].filter(f => f[1]);
 
   box.innerHTML = `<article class="item">
@@ -1201,7 +1453,7 @@ function renderItemCard(it) {
       <h2>${esc(it.desc)}</h2>
       <div class="code">${esc(it.code)}</div>
       <dl class="fields">${fields.map(f => `<dt>${esc(f[0])}</dt><dd>${esc(f[1])}</dd>`).join('')}</dl>
-      ${it.checked ? `<p class="muted">✔ Contado no inventário <b>${esc(invSess)}</b> em ${new Date(it.at).toLocaleString('pt-BR')} por <b>${esc(it.by)}</b>${method ? ` (${esc(method)})` : ''}</p>` : ''}
+      ${it.checked ? `<p class="muted">✔ Contado no inventário <b>${esc(invSess)}</b> em <b>${new Date(it.at).toLocaleString('pt-BR')}</b> por <b>${esc(it.by)}</b>${countDev ? ` · 📱 <b>${esc(countDev)}</b>` : ''}${method ? ` (${esc(method)})` : ''}</p>` : ''}
       <div class="row wrap-row">
         <button class="btn ${it.checked ? '' : 'ok primary'}" id="btnCheck">${it.checked ? '↩ Desfazer contagem' : '✔ Confirmar contagem'}</button>
         <button class="btn" id="btnEditItemCard">✏️ Editar Dados Mestre</button>
@@ -1213,7 +1465,7 @@ function renderItemCard(it) {
   $('#btnEditItemCard').onclick = () => openCreateModal(it.code, it, false);
 }
 
-/* ====== Tela de Cadastro / Edição de Item (Dados Mestre + Novos Itens) ====== */
+/* ====== Tela de Cadastro / Edição de Item (Dados Mestre + Novos Itens com Auditoria) ====== */
 function openCreateModal(code = '', existingItem = null, createdFromScan = false) {
   stopScan();
   newItemPhotoData = existingItem?.photo || null;
@@ -1237,7 +1489,7 @@ function openCreateModal(code = '', existingItem = null, createdFromScan = false
   $('#newLoc').value = existingItem?.loc || '';
   $('#newState').value = existingItem?.extra?._state || 'Bom';
   $('#newObs').value = existingItem?.obs || '';
-  $('#newChecked').checked = existingItem ? Boolean(existingItem.checked) : !isCurrentSessionClosed();
+  $('#newChecked').checked = existingItem ? Boolean(existingItem.checked) : (!isCurrentSessionClosed() && Boolean(getSessionCode()));
   $('#createForm').dataset.createdFromScan = createdFromScan ? '1' : '';
 
   if (newItemPhotoData) {
@@ -1322,7 +1574,9 @@ $('#createForm').onsubmit = async e => {
 
   const prev = await DB.get(code);
   const user = getUser() || setUser('Contador');
+  const dev = getDevice();
   const invSession = getSessionCode();
+  const nowIso = new Date().toISOString();
 
   const item = {
     code,
@@ -1334,14 +1588,21 @@ $('#createForm').onsubmit = async e => {
       ...(prev?.extra || {}),
       _state: state,
       _created_on_spot: prev ? prev.extra?._created_on_spot : createdFromScan,
+      _created_by: prev?.extra?._created_by || user,
+      _created_device: prev?.extra?._created_device || dev,
+      _created_at: prev?.extra?._created_at || nowIso,
+      _updated_by: user,
+      _updated_device: dev,
+      _updated_at: nowIso,
       ...(markChecked ? {
         _inv_session: invSession,
         _count_method: prev?.extra?._count_method || (createdFromScan ? 'Cadastrado durante leitura' : 'Cadastro Mestre'),
+        _count_device: prev?.extra?._count_device || dev,
       } : {}),
     },
     photo: newItemPhotoData || null,
     checked: markChecked,
-    at: markChecked ? (prev?.at || new Date().toISOString()) : null,
+    at: markChecked ? (prev?.at || nowIso) : null,
     by: markChecked ? (prev?.by || user) : null,
   };
 
@@ -1351,7 +1612,7 @@ $('#createForm').onsubmit = async e => {
   await refresh();
   closeCreateModal();
   renderItemCard(item);
-  toast('Item salvo no Supabase ✔');
+  toast(`✔ Salvo por ${user} (${dev})`);
 };
 
 async function toggleCheck(code) {
@@ -1360,18 +1621,27 @@ async function toggleCheck(code) {
   }
   const it = await DB.get(code);
   if (!it) return;
+  const user = getUser() || setUser('Contador');
+  const dev = getDevice();
+
   if (it.checked) {
     it.checked = false;
     it.at = null;
     it.by = null;
+    if (it.extra) {
+      delete it.extra._inv_session;
+      delete it.extra._count_method;
+      delete it.extra._count_device;
+    }
   } else {
     it.checked = true;
     it.at = new Date().toISOString();
-    it.by = getUser() || setUser('Contador');
+    it.by = user;
     it.extra = {
       ...(it.extra || {}),
       _inv_session: getSessionCode(),
       _count_method: 'Conferência Manual',
+      _count_device: dev,
     };
   }
   await DB.put(it);
@@ -1388,7 +1658,15 @@ $('#photoInput').onchange = async e => {
   if (!f || !currentCode) return;
   const url = await shrink(f, 900);
   const it = await DB.get(currentCode);
+  const user = getUser() || 'Contador';
+  const dev = getDevice();
   it.photo = url;
+  it.extra = {
+    ...(it.extra || {}),
+    _updated_by: user,
+    _updated_device: dev,
+    _updated_at: new Date().toISOString(),
+  };
   await DB.put(it);
   await Cloud.upsert([it]);
   await refresh();
@@ -1416,7 +1694,7 @@ function renderReconcile() {
     if (reconcileFilter === 'pend' && i.checked) return false;
     if (reconcileFilter === 'ok' && !i.checked) return false;
     if (!q) return true;
-    return norm(i.code + i.desc + i.loc + i.cat).includes(q);
+    return norm(i.code + i.desc + i.loc + i.cat + (i.by || '')).includes(q);
   });
 
   const ul = $('#reconcileList');
@@ -1432,9 +1710,11 @@ function renderReconcile() {
   }
 
   ul.innerHTML = list.slice(0, 300).map(i => {
-    const method = i.extra?._count_method || '';
+    const method = i.extra?._count_method || 'Leitura';
+    const dev = i.extra?._count_device || '';
+    const when = i.at ? new Date(i.at).toLocaleString('pt-BR') : '';
     const statusText = i.checked
-      ? `✔ Encontrado por ${esc(i.by || '—')} (${esc(method || 'Leitura')})`
+      ? `✔ Contado por <b>${esc(i.by || '—')}</b>${dev ? ` · 📱 ${esc(dev)}` : ''}${when ? ` · 🕒 ${esc(when)}` : ''} (${esc(method)})`
       : '❌ Não encontrado na contagem';
 
     return `<li data-rc="${esc(i.code)}">
@@ -1502,6 +1782,10 @@ function clearTargetSearch() {
 $('#btnCancelTargetScan')?.addEventListener('click', clearTargetSearch);
 
 async function acceptMissingItemAsFound(code) {
+  if (!getUser() || !getSessionCode()) {
+    openSessionModal(true);
+    return;
+  }
   if (isCurrentSessionClosed()) {
     toast('🔒 Inventário encerrado! Informe a senha de abertura para reabri-lo primeiro.');
     openReopenInvModal(getSessionCode());
@@ -1510,6 +1794,7 @@ async function acceptMissingItemAsFound(code) {
   const it = await DB.get(code);
   if (!it) return;
   const user = getUser() || setUser('Contador');
+  const dev = getDevice();
   const invSession = getSessionCode();
 
   it.checked = true;
@@ -1519,13 +1804,14 @@ async function acceptMissingItemAsFound(code) {
     ...(it.extra || {}),
     _inv_session: invSession,
     _count_method: 'Afirmado que existe (Aceito manualmente)',
+    _count_device: dev,
   };
 
   await DB.put(it);
   await Cloud.upsert([it]);
   await saveSessionToHistory({ sessionCode: invSession });
   await refresh();
-  toast(`✔ "${it.desc}" aceito como encontrado!`);
+  toast(`✔ "${it.desc}" aceito por ${user} (${dev})!`);
 }
 
 $('#searchReconcile')?.addEventListener('input', renderReconcile);
@@ -1538,16 +1824,18 @@ document.querySelectorAll('[data-rf]').forEach(c => c.onclick = () => {
 /* ====== Geração de Relatório / Arquivo de Não Encontrados para WhatsApp ====== */
 function buildMissingReportText() {
   const invCode = getSessionCode();
+  const activeHist = getActiveHistoryObj();
   const missing = items.filter(i => !i.checked);
   const found = items.filter(i => i.checked);
   const nowStr = new Date().toLocaleString('pt-BR');
 
   const lines = [
     `*RELATÓRIO DE INVENTÁRIO CCB - ${invCode}*`,
-    `Data: ${nowStr}`,
+    activeHist?.startedBy ? `Aberto por: ${activeHist.startedBy} (${activeHist.startedDevice || '—'})` : '',
+    `Gerado por: ${getUser() || '—'} (${getDevice()}) em ${nowStr}`,
     `Total na Base: ${items.length} | Encontrados: ${found.length} | *Não Encontrados: ${missing.length}*`,
     `----------------------------------------`,
-  ];
+  ].filter(Boolean);
 
   if (!missing.length) {
     lines.push(`✅ Todos os ${items.length} itens da base foram encontrados!`);
@@ -1609,7 +1897,7 @@ $('#btnShareWhatsapp')?.addEventListener('click', async () => {
   window.open(waUrl, '_blank');
 });
 
-/* ====== ABA 3: DADOS MESTRE (GESTÃO DE BENS) ====== */
+/* ====== ABA 3: DADOS MESTRE (GESTÃO DE BENS COM AUDITORIA DE USUÁRIO E DISPOSITIVO) ====== */
 function renderMaster() {
   if ($('#masterCount')) $('#masterCount').textContent = items.length;
 
@@ -1634,23 +1922,29 @@ function renderMaster() {
     if (fCat && i.cat !== fCat) return false;
     if (fLoc && i.loc !== fLoc) return false;
     if (!q) return true;
-    return norm(i.code + i.desc + i.loc + i.cat + i.obs).includes(q);
+    return norm(i.code + i.desc + i.loc + i.cat + i.obs + (i.extra?._created_by || '')).includes(q);
   });
 
   const ul = $('#masterList');
   if (!ul) return;
 
-  ul.innerHTML = list.length ? list.slice(0, 300).map(i => `<li data-mc="${esc(i.code)}">
-    <div class="list-main">
-      ${i.photo ? `<img class="thumb" src="${i.photo}" alt="">` : '<div class="thumb">🏛️</div>'}
-      <div class="info">
-        <b>${esc(i.desc)}</b>
-        <small>${esc(i.code)}${i.cat ? ' · 🏷️ ' + esc(i.cat) : ''}${i.loc ? ' · 📍 ' + esc(i.loc) : ''}</small>
-        <small>Estado: ${esc(i.extra?._state || 'Bom')}${i.obs ? ' · ' + esc(i.obs) : ''}</small>
+  ul.innerHTML = list.length ? list.slice(0, 300).map(i => {
+    const cBy = i.extra?._created_by || '';
+    const cDev = i.extra?._created_device || '';
+    const cAt = i.extra?._created_at ? new Date(i.extra._created_at).toLocaleString('pt-BR') : '';
+    return `<li data-mc="${esc(i.code)}">
+      <div class="list-main">
+        ${i.photo ? `<img class="thumb" src="${i.photo}" alt="">` : '<div class="thumb">🏛️</div>'}
+        <div class="info">
+          <b>${esc(i.desc)}</b>
+          <small>${esc(i.code)}${i.cat ? ' · 🏷️ ' + esc(i.cat) : ''}${i.loc ? ' · 📍 ' + esc(i.loc) : ''}</small>
+          <small>Estado: ${esc(i.extra?._state || 'Bom')}${i.obs ? ' · ' + esc(i.obs) : ''}</small>
+          ${cBy ? `<small>👤 Cad.: ${esc(cBy)}${cDev ? ` · 📱 ${esc(cDev)}` : ''}${cAt ? ` · ${esc(cAt)}` : ''}</small>` : ''}
+        </div>
+        <span class="chip">✏️ Editar</span>
       </div>
-      <span class="chip">✏️ Editar</span>
-    </div>
-  </li>`).join('') : '<li class="empty">Nenhum bem encontrado nos Dados Mestre.</li>';
+    </li>`;
+  }).join('') : '<li class="empty">Nenhum bem encontrado nos Dados Mestre.</li>';
 }
 
 $('#masterList')?.addEventListener('click', e => {
@@ -1677,6 +1971,12 @@ async function refresh() {
     .map(i => i.extra)
     .sort((a, b) => String(b.updatedAt || b.startedAt || '').localeCompare(String(a.updatedAt || a.startedAt || '')));
 
+  // Garante que todos trabalhem no único inventário aberto caso exista um
+  const openInv = findGlobalOpenInventory();
+  if (openInv && localStorage.getItem('inv_session_code') !== openInv.sessionCode) {
+    localStorage.setItem('inv_session_code', openInv.sessionCode);
+  }
+
   const ok = items.filter(i => i.checked).length;
   const createdSpot = items.filter(i => i.extra?._created_on_spot).length;
   if ($('#stTotal')) $('#stTotal').textContent = items.length;
@@ -1701,8 +2001,13 @@ function onCode(code) {
   handleScanOrSearch(code);
 }
 async function startScan() {
+  if (!getUser() || !getSessionCode()) {
+    openSessionModal(true);
+    return;
+  }
   if (isCurrentSessionClosed()) {
-    toast('🔒 Inventário encerrado! Reabra para usar o leitor.');
+    toast('🔒 Inventário encerrado! Reabra com a senha para usar o leitor.');
+    openReopenInvModal(getSessionCode());
     return;
   }
   const sc = document.querySelector('.scanner'), video = $('#video');
@@ -1775,12 +2080,12 @@ $('#manualForm').onsubmit = e => {
     await Cloud.syncAll(false);
     setInterval(() => {
       if (document.visibilityState === 'visible') Cloud.syncAll(false);
-    }, 10000);
+    }, 8000);
   }
 
-  // Se o usuário ainda não abriu ou entrou em um inventário neste aparelho, solicita nome, código e senha de abertura
-  if (!getUser() || !histories.some(h => h.sessionCode === getSessionCode())) {
-    openSessionModal(true, 'new');
+  // Se o usuário ainda não se identificou ou não há inventário ativo, abre o modal inicial
+  if (!getUser() || !getSessionCode() || !histories.some(h => h.sessionCode === getSessionCode())) {
+    openSessionModal(true);
   }
 
   if ($('#importMsg')) $('#importMsg').textContent = localStorage.getItem('lastImport') || '';

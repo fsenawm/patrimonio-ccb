@@ -232,25 +232,26 @@
   </div>
 </div>
 
-<!-- POP-UP CENTRALIZADO 3: INICIAR NOVO INVENTÁRIO (COM SENHA) OU PARTICIPAR DE EXISTENTE -->
+<!-- POP-UP CENTRALIZADO 3: INICIAR NOVO INVENTÁRIO (COM SENHA) OU ENTRAR NO INVENTÁRIO ÚNICO ATIVO -->
 <div id="sessionModal" class="modal center-modal hidden" role="dialog" aria-modal="true">
   <div class="modal-box popup-card">
     <div class="modal-head">
-      <h2>🏷️ Iniciar / Entrar no Inventário</h2>
+      <h2 id="sessionModalTitle">🏷️ Inventário de Patrimônio</h2>
       <button type="button" id="btnCloseSessionModal" class="chip">✖</button>
     </div>
 
-    <div class="mode-switch">
-      <button type="button" id="btnModeNewInv" class="chip sel">➕ Abrir Novo Inventário</button>
-      <button type="button" id="btnModeJoinInv" class="chip">👥 Entrar em Existente</button>
-    </div>
+    <div id="singleOpenNotice" class="popup-info-box hidden"></div>
 
     <form id="sessionForm" class="form-stack">
-      <label class="field-label">Seu Nome (Responsável / Contador) *
+      <label class="field-label">👤 Seu Nome (Responsável / Contador) *
         <input id="sessionUserInput" type="text" required placeholder="Ex.: Fernando">
       </label>
 
-      <label class="field-label">Código do Inventário *
+      <label class="field-label">📱 Dispositivo Utilizado *
+        <input id="sessionDeviceInput" type="text" required placeholder="Ex.: Samsung S23 / iPhone / PC">
+      </label>
+
+      <label class="field-label">🏷️ Código do Inventário *
         <div class="row" style="margin-top:0">
           <input id="sessionCodeInput" type="text" required placeholder="Ex.: INV-2026-01">
           <button type="button" id="btnGenerateSessionCode" class="btn" title="Gerar novo código automático">⚡ Gerar</button>
@@ -261,21 +262,12 @@
         <label class="field-label">🔒 Senha de Abertura do Inventário *
           <input id="sessionPassInput" type="password" placeholder="Defina uma senha para encerrar/reabrir/eliminar" autocomplete="new-password">
         </label>
-        <small class="muted" style="text-align:left;margin-top:-6px">Esta senha será exigida para encerrar, reabrir ou eliminar este inventário.</small>
-        <label class="check">
-          <input type="checkbox" id="sessionResetChecks" checked>
-          Iniciar contagem limpa para este novo inventário (mantém Dados Mestre e salva anterior no histórico)
-        </label>
-      </div>
-
-      <div id="joinInvGroup" class="hidden" style="text-align:left">
-        <p class="muted" style="margin:0">Escolha um inventário aberto na nuvem ou digite o código acima para contar junto com outros usuários:</p>
-        <div id="openSessionsList" class="chips-wrap" style="margin-top:8px"></div>
+        <small class="muted" style="text-align:left;margin-top:-6px">Esta senha será exigida para encerrar, reabrir ou eliminar este inventário. Apenas 1 inventário pode ficar aberto por vez.</small>
       </div>
 
       <div class="row">
         <button type="button" id="btnCancelSession" class="btn">Cancelar</button>
-        <button type="submit" id="btnSubmitSession" class="btn ok primary">✔ Confirmar e Iniciar</button>
+        <button type="submit" id="btnSubmitSession" class="btn ok primary">✔ Confirmar</button>
       </div>
     </form>
   </div>
@@ -339,6 +331,22 @@
         <button type="submit" class="btn ok primary">🔓 Confirmar e Reabrir</button>
       </div>
     </form>
+  </div>
+</div>
+
+<!-- POP-UP CENTRALIZADO 7: DETALHES DE AUDITORIA DO HISTÓRICO (QUEM ABRIU E QUEM CONTOU CADA ITEM) -->
+<div id="histDetailModal" class="modal center-modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2 id="histDetailTitle">📜 Detalhes do Inventário</h2>
+      <button type="button" id="btnCloseHistDetail" class="chip">✖</button>
+    </div>
+    <div id="histDetailMeta" class="popup-info-box" style="margin-top:6px"></div>
+    <h3 style="margin:12px 0 8px;font-size:15px;color:var(--gold2)">📋 Itens Contados neste Inventário</h3>
+    <ul id="histDetailItems" class="list" style="max-height:48dvh;overflow-y:auto"></ul>
+    <div class="row">
+      <button type="button" id="btnOkHistDetail" class="btn primary">Fechar</button>
+    </div>
   </div>
 </div>
 
