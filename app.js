@@ -1,8 +1,8 @@
 'use strict';
 
 /* ====== Configuração Padrão do Supabase ====== */
-const DEFAULT_SUPABASE_URL = '';
-const DEFAULT_SUPABASE_ANON_KEY = '';
+const DEFAULT_SUPABASE_URL = 'https://vjdcsautoooubtjdhswk.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_fmDYGqwIa1IY_B-iNZ4XAQ_QUP1BNmb';
 
 /* ====== Banco local (IndexedDB) ====== */
 const DB = {
