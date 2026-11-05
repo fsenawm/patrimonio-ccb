@@ -1,9 +1,9 @@
 'use strict';
 
 /* ====== Versão do Aplicativo e Configuração Padrão do Supabase ====== */
-const APP_VERSION = 'v1.12.0';
-const APP_BUILD_DATE = '05/11/2026 00:45';
-const APP_BUILD_NOTES = 'Dispositivo e Código do Inventário (INV+Data+Hora) automáticos e bloqueados para edição';
+const APP_VERSION = 'v1.13.0';
+const APP_BUILD_DATE = '05/11/2026 00:52';
+const APP_BUILD_NOTES = 'Exibe o Nome Comercial do Produto no Dispositivo Utilizado (ex.: Galaxy A54, Redmi Note 13, Moto G84, iPhone 15)';
 const DEFAULT_SUPABASE_URL = 'https://vjdcsautoooubtjdhswk.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_fmDYGqwIa1IY_B-iNZ4XAQ_QUP1BNmb';
 const META_ROW_CODE = '__INV_META__';
@@ -56,11 +56,16 @@ let pendingDeleteSessionCode = null;
 let pendingReopenSessionCode = null;
 let syncBusy = false;
 
-/* ====== Detecção Automática do Nome / Modelo do Aparelho ====== */
-const SAMSUNG_MODELS = {
+/* ====== Detecção Automática do Nome Comercial do Produto (Aparelho) ====== */
+const PRODUCT_MODELS = {
+  // Samsung Galaxy S Series
+  'SM-S938': 'Samsung Galaxy S25 Ultra',
+  'SM-S936': 'Samsung Galaxy S25+',
+  'SM-S931': 'Samsung Galaxy S25',
   'SM-S928': 'Samsung Galaxy S24 Ultra',
   'SM-S926': 'Samsung Galaxy S24+',
   'SM-S921': 'Samsung Galaxy S24',
+  'SM-S721': 'Samsung Galaxy S24 FE',
   'SM-S918': 'Samsung Galaxy S23 Ultra',
   'SM-S916': 'Samsung Galaxy S23+',
   'SM-S911': 'Samsung Galaxy S23',
@@ -72,25 +77,142 @@ const SAMSUNG_MODELS = {
   'SM-G998': 'Samsung Galaxy S21 Ultra',
   'SM-G996': 'Samsung Galaxy S21+',
   'SM-G991': 'Samsung Galaxy S21',
-  'SM-A556': 'Samsung Galaxy A55',
-  'SM-A546': 'Samsung Galaxy A54',
-  'SM-A536': 'Samsung Galaxy A53',
-  'SM-A528': 'Samsung Galaxy A52s',
+  'SM-G780': 'Samsung Galaxy S20 FE',
+  'SM-G781': 'Samsung Galaxy S20 FE 5G',
+  'SM-G988': 'Samsung Galaxy S20 Ultra',
+  'SM-G985': 'Samsung Galaxy S20+',
+  'SM-G980': 'Samsung Galaxy S20',
+  // Samsung Galaxy Z Fold / Flip
+  'SM-F956': 'Samsung Galaxy Z Fold6',
+  'SM-F946': 'Samsung Galaxy Z Fold5',
+  'SM-F936': 'Samsung Galaxy Z Fold4',
+  'SM-F741': 'Samsung Galaxy Z Flip6',
+  'SM-F731': 'Samsung Galaxy Z Flip5',
+  'SM-F721': 'Samsung Galaxy Z Flip4',
+  // Samsung Galaxy A Series
+  'SM-A556': 'Samsung Galaxy A55 5G',
+  'SM-A546': 'Samsung Galaxy A54 5G',
+  'SM-A536': 'Samsung Galaxy A53 5G',
+  'SM-A528': 'Samsung Galaxy A52s 5G',
+  'SM-A526': 'Samsung Galaxy A52 5G',
   'SM-A525': 'Samsung Galaxy A52',
-  'SM-A356': 'Samsung Galaxy A35',
-  'SM-A346': 'Samsung Galaxy A34',
-  'SM-A336': 'Samsung Galaxy A33',
-  'SM-A256': 'Samsung Galaxy A25',
+  'SM-A515': 'Samsung Galaxy A51',
+  'SM-A505': 'Samsung Galaxy A50',
+  'SM-A356': 'Samsung Galaxy A35 5G',
+  'SM-A346': 'Samsung Galaxy A34 5G',
+  'SM-A336': 'Samsung Galaxy A33 5G',
+  'SM-A325': 'Samsung Galaxy A32',
+  'SM-A315': 'Samsung Galaxy A31',
+  'SM-A307': 'Samsung Galaxy A30s',
+  'SM-A305': 'Samsung Galaxy A30',
+  'SM-A256': 'Samsung Galaxy A25 5G',
   'SM-A245': 'Samsung Galaxy A24',
+  'SM-A236': 'Samsung Galaxy A23 5G',
+  'SM-A235': 'Samsung Galaxy A23',
+  'SM-A226': 'Samsung Galaxy A22 5G',
+  'SM-A225': 'Samsung Galaxy A22',
+  'SM-A217': 'Samsung Galaxy A21s',
+  'SM-A207': 'Samsung Galaxy A20s',
+  'SM-A205': 'Samsung Galaxy A20',
+  'SM-A166': 'Samsung Galaxy A16 5G',
+  'SM-A165': 'Samsung Galaxy A16',
   'SM-A156': 'Samsung Galaxy A15 5G',
   'SM-A155': 'Samsung Galaxy A15',
   'SM-A146': 'Samsung Galaxy A14 5G',
   'SM-A145': 'Samsung Galaxy A14',
+  'SM-A136': 'Samsung Galaxy A13 5G',
+  'SM-A135': 'Samsung Galaxy A13',
+  'SM-A127': 'Samsung Galaxy A12',
+  'SM-A125': 'Samsung Galaxy A12',
+  'SM-A115': 'Samsung Galaxy A11',
+  'SM-A107': 'Samsung Galaxy A10s',
+  'SM-A105': 'Samsung Galaxy A10',
+  'SM-A065': 'Samsung Galaxy A06',
   'SM-A057': 'Samsung Galaxy A05s',
   'SM-A055': 'Samsung Galaxy A05',
-  'SM-M546': 'Samsung Galaxy M54',
-  'SM-M346': 'Samsung Galaxy M34',
-  'SM-M146': 'Samsung Galaxy M14',
+  'SM-A047': 'Samsung Galaxy A04s',
+  'SM-A045': 'Samsung Galaxy A04',
+  'SM-A042': 'Samsung Galaxy A04e',
+  'SM-A037': 'Samsung Galaxy A03s',
+  'SM-A035': 'Samsung Galaxy A03',
+  'SM-A032': 'Samsung Galaxy A03 Core',
+  'SM-A025': 'Samsung Galaxy A02s',
+  'SM-A022': 'Samsung Galaxy A02',
+  'SM-A015': 'Samsung Galaxy A01',
+  // Samsung Galaxy M Series
+  'SM-M556': 'Samsung Galaxy M55 5G',
+  'SM-M546': 'Samsung Galaxy M54 5G',
+  'SM-M536': 'Samsung Galaxy M53 5G',
+  'SM-M526': 'Samsung Galaxy M52 5G',
+  'SM-M515': 'Samsung Galaxy M51',
+  'SM-M356': 'Samsung Galaxy M35 5G',
+  'SM-M346': 'Samsung Galaxy M34 5G',
+  'SM-M336': 'Samsung Galaxy M33 5G',
+  'SM-M325': 'Samsung Galaxy M32',
+  'SM-M315': 'Samsung Galaxy M31',
+  'SM-M236': 'Samsung Galaxy M23 5G',
+  'SM-M156': 'Samsung Galaxy M15 5G',
+  'SM-M146': 'Samsung Galaxy M14 5G',
+  'SM-M135': 'Samsung Galaxy M13',
+  'SM-M127': 'Samsung Galaxy M12',
+  // Motorola Moto G / Edge
+  'XT2431': 'Motorola Moto G85 5G',
+  'XT2347': 'Motorola Moto G84 5G',
+  'XT2427': 'Motorola Moto G75 5G',
+  'XT2363': 'Motorola Moto G54 5G',
+  'XT2435': 'Motorola Moto G35 5G',
+  'XT2343': 'Motorola Moto G34 5G',
+  'XT2425': 'Motorola Moto G24',
+  'XT2423': 'Motorola Moto G24 Power',
+  'XT2421': 'Motorola Moto G04',
+  'XT2335': 'Motorola Moto G53 5G',
+  'XT2331': 'Motorola Moto G23',
+  'XT2333': 'Motorola Moto G73 5G',
+  'XT2237': 'Motorola Moto G82 5G',
+  'XT2255': 'Motorola Moto G72',
+  'XT2233': 'Motorola Moto G52',
+  'XT2235': 'Motorola Moto G42',
+  'XT2231': 'Motorola Moto G22',
+  'XT2173': 'Motorola Moto G31',
+  'XT2169': 'Motorola Moto G71 5G',
+  'XT2135': 'Motorola Moto G60',
+  'XT2129': 'Motorola Moto G30',
+  'XT2128': 'Motorola Moto G20',
+  'XT2127': 'Motorola Moto G10',
+  'XT2403': 'Motorola Edge 50 Pro',
+  'XT2407': 'Motorola Edge 50 Fusion',
+  'XT2409': 'Motorola Edge 50 Neo',
+  'XT2303': 'Motorola Edge 40',
+  'XT2307': 'Motorola Edge 40 Neo',
+  'XT2203': 'Motorola Edge 30',
+  'XT2245': 'Motorola Edge 30 Neo',
+  // Xiaomi / Redmi / POCO
+  '2312DRA50': 'Xiaomi Redmi Note 13 Pro 5G',
+  '23117RA68': 'Xiaomi Redmi Note 13 Pro',
+  '23124RA7E': 'Xiaomi Redmi Note 13 5G',
+  '23129RAA4': 'Xiaomi Redmi Note 13',
+  '23021RAA2': 'Xiaomi Redmi Note 12',
+  '23021RAAEG': 'Xiaomi Redmi Note 12',
+  '22101316': 'Xiaomi Redmi Note 12 Pro 5G',
+  '2209116AG': 'Xiaomi Redmi Note 12 Pro',
+  '2201117T': 'Xiaomi Redmi Note 11',
+  '2201117S': 'Xiaomi Redmi Note 11S',
+  '2201116S': 'Xiaomi Redmi Note 11 Pro',
+  'M2101K7B': 'Xiaomi Redmi Note 10S',
+  'M2101K7A': 'Xiaomi Redmi Note 10',
+  'M2101K6G': 'Xiaomi Redmi Note 10 Pro',
+  '23106RN0D': 'Xiaomi Redmi 13C',
+  '23124RN87': 'Xiaomi Redmi 13C 5G',
+  '23053RN02': 'Xiaomi Redmi 12',
+  '22120RN86': 'Xiaomi Redmi 12C',
+  '23077RABDC': 'Xiaomi Redmi A2',
+  '24049RN28': 'Xiaomi Redmi A3',
+  '2311DRK48': 'POCO X6 Pro 5G',
+  '23122PCD1': 'POCO X6 5G',
+  '2312FPCA6': 'POCO M6 Pro',
+  '22101320': 'POCO X5 Pro 5G',
+  '22111317': 'POCO X5 5G',
+  '23049PCD8': 'POCO F5',
 };
 
 function friendlyHardwareModel(rawModel) {
@@ -100,19 +222,29 @@ function friendlyHardwareModel(rawModel) {
   if (m === 'K' || m === 'wv' || m === 'Linux' || m === 'Android') return '';
 
   const upper = m.toUpperCase();
-  for (const prefix in SAMSUNG_MODELS) {
+  // Verifica correspondência pelo prefixo no dicionário de Nomes de Produto
+  for (const prefix in PRODUCT_MODELS) {
     if (upper.startsWith(prefix)) {
-      return `${SAMSUNG_MODELS[prefix]} (${m})`;
+      return PRODUCT_MODELS[prefix];
+    }
+  }
+  // Tradução genérica caso seja um código Samsung novo ainda não tabelado (ex: SM-A566B -> Samsung Galaxy A56)
+  const smMatch = upper.match(/^SM-([ASMFG])(\d{2})\d/i);
+  if (smMatch) {
+    const serie = smMatch[1].toUpperCase();
+    const num = smMatch[2];
+    if (serie === 'A' || serie === 'M' || serie === 'S') {
+      return `Samsung Galaxy ${serie}${num}`;
     }
   }
   if (upper.startsWith('SM-') && !/samsung/i.test(m)) {
-    return `Samsung ${m}`;
+    return `Samsung Galaxy (${m})`;
   }
   if (/^M\d{4}|^2\d{6}/i.test(m) && !/xiaomi|redmi|poco/i.test(m)) {
-    return `Xiaomi (${m})`;
+    return `Xiaomi Redmi (${m})`;
   }
   if (/^XT\d{4}/i.test(m) && !/moto/i.test(m)) {
-    return `Motorola (${m})`;
+    return `Motorola Moto (${m})`;
   }
   return m;
 }
