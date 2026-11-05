@@ -198,14 +198,14 @@
 
     <div class="card danger">
       <h2>Apagar Base Mestre Completa</h2>
-      <p class="muted">Remove todos os bens cadastrados nos Dados Mestre e históricos (requer senha do inventário ativo se houver).</p>
+      <p class="muted">Remove todos os bens cadastrados nos Dados Mestre e históricos (protegido por senha mestre).</p>
       <button id="btnReset" class="btn danger">🗑️ Apagar Tudo (Base Mestre + Histórico)</button>
     </div>
 
     <div class="card">
       <div class="row between">
         <h2>ℹ️ Versão do Aplicativo</h2>
-        <span id="appVersionBadge" class="badge gold">v1.13.0</span>
+        <span id="appVersionBadge" class="badge gold">v1.14.0</span>
       </div>
       <p id="appVersionInfo" class="muted">Carregando informações da versão...</p>
       <button id="btnForceUpdate" class="btn" type="button" style="width:100%">🔄 Forçar Atualização da Versão</button>
@@ -353,6 +353,24 @@
     <div class="row">
       <button type="button" id="btnOkHistDetail" class="btn primary">Fechar</button>
     </div>
+  </div>
+</div>
+
+<!-- POP-UP CENTRALIZADO 8: APAGAR BASE MESTRE COMPLETA (EXIGE SENHA MESTRE ccb123@) -->
+<div id="resetBaseModal" class="modal center-modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box popup-card warn-popup">
+    <div class="popup-icon">🚨</div>
+    <h2>Apagar Base Completa</h2>
+    <p class="muted">Esta ação apagará permanentemente <b>todos os Dados Mestre, fotos e históricos</b> do aplicativo e do Supabase. Informe a senha mestre para confirmar:</p>
+    <form id="resetBaseForm" class="form-stack">
+      <label class="field-label">🔒 Senha para Apagar Base Completa *
+        <input id="resetBasePassInput" type="password" required placeholder="Digite a senha de autorização" autocomplete="off">
+      </label>
+      <div class="row">
+        <button type="button" id="btnCancelResetBase" class="btn">Cancelar</button>
+        <button type="submit" class="btn danger primary" style="background:var(--bad);color:#fff;border:0">🗑️ Apagar Tudo</button>
+      </div>
+    </form>
   </div>
 </div>
 

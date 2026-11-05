@@ -1,9 +1,10 @@
 'use strict';
 
 /* ====== Versão do Aplicativo e Configuração Padrão do Supabase ====== */
-const APP_VERSION = 'v1.13.0';
-const APP_BUILD_DATE = '05/11/2026 00:52';
-const APP_BUILD_NOTES = 'Exibe o Nome Comercial do Produto no Dispositivo Utilizado (ex.: Galaxy A54, Redmi Note 13, Moto G84, iPhone 15)';
+const APP_VERSION = 'v1.14.0';
+const APP_BUILD_DATE = '05/11/2026 00:54';
+const APP_BUILD_NOTES = 'Proteção com senha mestre (ccb123@) para Apagar Base Completa';
+const MASTER_RESET_PASSWORD = 'ccb123@';
 const DEFAULT_SUPABASE_URL = 'https://vjdcsautoooubtjdhswk.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_fmDYGqwIa1IY_B-iNZ4XAQ_QUP1BNmb';
 const META_ROW_CODE = '__INV_META__';
@@ -1507,24 +1508,41 @@ $('#btnExport').onclick = () => {
   a.click();
 };
 
-$('#btnReset').onclick = async () => {
-  const s = getSessionCode();
-  const savedPass = await getSessionPassword(s);
-  if (savedPass) {
-    const typed = prompt(`Digite a senha de abertura do inventário (${s}) para apagar toda a base:`);
-    if (typed === null) return;
-    if (typed.trim() !== savedPass) return toast('❌ Senha incorreta! Operação cancelada.');
-  } else if (!confirm('ATENÇÃO: Apagar TODOS os Dados Mestre, fotos e históricos do banco?')) {
-    return;
-  }
-  await DB.clear();
-  await Cloud.clearRemote();
-  localStorage.removeItem('inv_session_code');
-  localStorage.removeItem('inv_session_manual');
-  await refresh();
-  $('#result').innerHTML = '';
-  toast('Todos os dados foram apagados');
+$('#btnReset').onclick = () => {
+  stopScan();
+  if ($('#resetBasePassInput')) $('#resetBasePassInput').value = '';
+  $('#resetBaseModal')?.classList.remove('hidden');
+  setTimeout(() => $('#resetBasePassInput')?.focus(), 80);
 };
+
+$('#btnCancelResetBase')?.addEventListener('click', () => {
+  $('#resetBaseModal')?.classList.add('hidden');
+});
+
+$('#resetBaseForm')?.addEventListener('submit', async e => {
+  e.preventDefault();
+  const typed = ($('#resetBasePassInput')?.value || '').trim();
+  if (typed !== MASTER_RESET_PASSWORD) {
+    navigator.vibrate?.([200, 100, 200]);
+    return toast('❌ Senha incorreta! Não é permitido apagar a base completa.');
+  }
+
+  syncBusy = true;
+  try {
+    await DB.clear();
+    await Cloud.clearRemote();
+    localStorage.removeItem('inv_session_code');
+    localStorage.removeItem('inv_session_manual');
+    histories = [];
+    items = [];
+    await refresh();
+    $('#result').innerHTML = '';
+    $('#resetBaseModal')?.classList.add('hidden');
+    toast('🗑️ Toda a base e históricos foram apagados!');
+  } finally {
+    syncBusy = false;
+  }
+});
 
 /* ====== Busca e Contagem com Pop-ups Centralizados ====== */
 function findLocal(code) {
